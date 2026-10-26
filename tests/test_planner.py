@@ -12,6 +12,7 @@ from backend.core.constants import (
     MAX_ATTEMPTS,
     READ_TIMEOUT_SECONDS,
     SWAP_MAX_TOKENS,
+    terms,
 )
 from backend.core.errors import PlanGenerationError, RetryableError
 from backend.core.timing import estimate_day_minutes, fit_to_session
@@ -20,6 +21,7 @@ from backend.core.utils import (
     describe_equipment,
     find_equipment_conflicts,
     find_limitation_conflicts,
+    is_stretch,
     list_exercises,
     parse_swap_row,
     resolve_credentials,
@@ -874,3 +876,125 @@ def test_a_circuit_plan_offers_no_header_for_swapping_and_counts_its_rounds() ->
         plan = generate_workout_plan(**VALID, api_key="k")
     assert list_exercises(plan) == ["Bodyweight squat", "Glute bridge", "Wall sit"]
     assert stated_minutes(plan) == [24, 24]  # 4 x (150 s of work + 60 s rest) + 10 min
+
+
+# --- fix round 1 (qe-bug-fixes): spellings, negated cues, rest rows, circuit headers ------
+
+
+def test_a_term_accepts_a_space_a_hyphen_or_nothing_between_its_words() -> None:
+    pattern = terms("mountain climber", r"push ups?\b")
+    for name in ("Mountain Climber", "Mountain-Climbers", "Mountainclimber", "Push Up", "Push-ups", "pushup"):
+        assert pattern.search(name), name
+    assert not pattern.search("Push Upright Row")
+
+
+@pytest.mark.parametrize(
+    ("exercise", "limitations"),
+    [
+        ("Mountain-Climber-style (hands on fists)", "sore wrist"),
+        ("Mountain-Climber Walk", "sore wrist"),
+        ("Mountain\N{NON-BREAKING HYPHEN}Climber", "sore wrist"),
+        ("Bear-Crawl", "sore wrist"),
+        ("Good-Morning", "lower back pain"),
+        ("Russian-Twist", "lower back pain"),
+        ("Romanian Deadlift (RDL)", "lower back pain"),
+        ("Shoulder-Press", "no overhead pressing"),
+        ("Step\N{EM DASH}Up", "bad knees"),
+        ("Jack-knife Sit Up", "lower back pain"),
+    ],
+)
+def test_hyphenated_spellings_of_every_guarded_word_are_caught(exercise: str, limitations: str) -> None:
+    assert find_limitation_conflicts([exercise], limitations) == [exercise]
+
+
+@pytest.mark.parametrize(
+    ("name", "equipment"),
+    [
+        ("Hack Squat", ["Home dumbbells"]),
+        ("Battle-Rope Waves", ["Home dumbbells"]),
+        ("Sandbag Carry", ["No equipment"]),
+        ("Mini-band Walk", ["No equipment"]),
+        ("Air Bike Sprint", ["No equipment"]),
+        ("Dumb-bell Row", ["No equipment"]),
+    ],
+)
+def test_more_gym_and_dumbbell_names_need_the_equipment(name: str, equipment: list[str]) -> None:
+    assert find_equipment_conflicts([name], equipment) == [name]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Inchworm",
+        "Thoracic Rotation",
+        "Hip Openers",
+        "Cobra Pose",
+        "Child\N{RIGHT SINGLE QUOTATION MARK}s Pose",
+    ],
+)
+def test_yoga_and_mobility_drills_are_stretches(name: str) -> None:
+    assert is_stretch(name)
+
+
+@pytest.mark.parametrize("name", ["Bird Dog", "Glute Bridge", "Boat Pose Hold", "Pike Push-up"])
+def test_strength_moves_are_not_stretches(name: str) -> None:
+    assert not is_stretch(name)
+
+
+def test_a_negated_cue_in_notes_is_kept_for_the_client_it_protects() -> None:
+    rows = (*SAFE_ROWS[:3], "| Standing Toe Touch | 3 | 10 | 45 s | No jump, touch opposite toe |")
+    plan = check_plan(build_plan(1, rows), 1, "bad knees")
+    assert "No jump, touch opposite toe" in plan
+
+
+@pytest.mark.parametrize("cue", ["Don\N{RIGHT SINGLE QUOTATION MARK}t jump", "avoid lunges", "never jump"])
+def test_every_negation_word_keeps_its_cue(cue: str) -> None:
+    rows = (*SAFE_ROWS[:3], f"| Standing Toe Touch | 3 | 10 | 45 s | {cue} |")
+    assert cue in check_plan(build_plan(1, rows), 1, "bad knees")
+
+
+def test_a_warm_up_with_a_banned_item_before_a_negated_one_is_still_replaced() -> None:
+    plan = build_plan(1).replace("Brisk walk in place.", "20 jumping jacks, no lunges.")
+    assert "jumping jacks" not in check_plan(plan, 1, "bad knees")
+
+
+def test_rest_rows_and_circuit_headers_are_not_exercises_but_lookalikes_are() -> None:
+    plan = build_plan(
+        1,
+        [
+            "| Circuit A (3 rounds) | - | - | - | |",
+            "| Circuit B (repeat 2x): | 3 | 10 | 60 s | |",
+            "| Rest between rounds | 3 | - | 30 s | |",
+            "| Rest | | 2 min | | |",
+            "| Rest-Pause Curl | 3 | 10 | 60 s | |",
+            "| Round-the-World Lunge | 3 | 10 | 60 s | |",
+            "| Superset A: Push-up + Row | 3 | 10 | 60 s | |",
+        ],
+    )
+    assert list_exercises(plan) == ["Rest-Pause Curl", "Round-the-World Lunge", "Superset A: Push-up + Row"]
+
+
+def test_a_round_the_world_lunge_for_bad_knees_is_dropped_not_retried() -> None:
+    rows = (*SAFE_ROWS, "| Round-the-World Lunge | 3 | 10 | 60 s | |")
+    plan = check_plan(build_plan(1, rows), 1, "bad knees")
+    assert "Removed Round-the-World Lunge" in plan
+
+
+def test_a_separator_without_a_header_above_keeps_its_own_cell_count() -> None:
+    plan = "## Day 1\n|---s|---|\n| Squat | 3 |"
+    assert "|---|---|" in check_plan(plan, 1)
+
+
+def test_a_rest_row_and_a_negated_cue_through_generate() -> None:
+    rows = [
+        "| Bodyweight Squat | 3 | 10 | 10 s | circuit; no jump |",
+        "| Glute Bridge | 3 | 10 | 10 s | circuit |",
+        "| Dead Bug | 3 | 10 | 10 s | circuit |",
+        "| Rest between rounds | 3 | \N{EM DASH} | 30 s | circuit |",
+    ]
+    client = mock_client(fake_response(build_plan(1, rows)))
+    with patch.object(groq_client, "Groq", return_value=client):
+        plan = generate_workout_plan(**{**VALID, "days_per_week": 1, "limitations": "bad knees"}, api_key="k")
+    assert "circuit; no jump" in plan and "Rest between rounds" not in list_exercises(plan)
+    # 3 x (3 x (30 + 10 s)) + 3 x 30 s rest + 10 min = 17.5 min, all readable
+    assert "**Session time:** about 18 min" in plan

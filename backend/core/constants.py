@@ -13,6 +13,18 @@ AGENT_FILE = Path(__file__).resolve().parents[2] / "agents" / "workout-trainer.m
 DISCLAIMER_MARKER = "Disclaimer"
 # The tags around the client's own text in the prompt; stripped from that text (see prompts.py).
 CLIENT_NOTES_TAG = re.compile(r"</?\s*client_notes\s*>", re.IGNORECASE)
+# Every section the code reads from the agent file; a file missing one (e.g. a misspelt marker
+# that merged two sections) is rejected instead of loading.
+PROMPT_SECTIONS: tuple[str, ...] = (
+    "system",
+    "plan-request",
+    "swap-system",
+    "swap-request",
+    "learned-rules-heading",
+    "reflection-system",
+    "reflection-request",
+    "learned-rules",
+)
 
 # --- Input options and limits ----------------------------------------------------------
 
@@ -78,6 +90,15 @@ FALLBACK_DISCLAIMER = (
 DAY_HEADING_PATTERN = re.compile(r"^##\s*Day\s+(\d+)\b", re.IGNORECASE | re.MULTILINE)
 
 
+def terms(*patterns: str) -> re.Pattern[str]:
+    """One case-insensitive pattern for exercise terms, where each space may be a space, a hyphen or nothing.
+
+    So "push ups?\\b" matches "Push-up", "Push Up", "pushups"; a term without a trailing \\b also
+    matches its plural.
+    """
+    return re.compile("|".join(p.replace(" ", "[- ]?") for p in patterns), re.IGNORECASE)
+
+
 # Code-level backstop for the most common limitations. The prompt already forbids these, but
 # live tests showed the model slipping about 1 time in 4 (e.g. a shoulder press for "no overhead
 # pressing"), so check_plan drops such exercises, or asks again if a day would be left too thin.
@@ -91,15 +112,22 @@ class LimitationGuard(NamedTuple):
 LIMITATION_GUARDS: tuple[LimitationGuard, ...] = (
     LimitationGuard(
         re.compile(r"\bknee", re.IGNORECASE),
-        re.compile(r"jump|lunge|step[- ]?ups?\b|pistol|plyo|burpee|skater|split[- ]?squats?", re.IGNORECASE),
+        terms("jump", "lunge", r"step ups?\b", "pistol", "plyo", "burpee", "skater", "split squat"),
         None,
         "anything that jumps or loads one bent knee (jumps, lunges, step-ups, split or pistol squats)",
     ),
     LimitationGuard(
         re.compile(r"overhead|shoulder", re.IGNORECASE),
-        re.compile(
-            r"overhead|shoulder press|military press|push press|arnold|handstand|snatch|jerk|pike",
-            re.IGNORECASE,
+        terms(
+            "overhead",
+            "shoulder press",
+            "military press",
+            "push press",
+            "arnold",
+            "handstand",
+            "snatch",
+            "jerk",
+            "pike",
         ),
         None,
         "ANY movement with the arms raised overhead (shoulder, Arnold, military or push presses, "
@@ -107,8 +135,15 @@ LIMITATION_GUARDS: tuple[LimitationGuard, ...] = (
     ),
     LimitationGuard(
         re.compile(r"wrist", re.IGNORECASE),
-        re.compile(
-            r"push[- ]?ups?\b|mountain climber|burpee|handstand|plank|bear crawl|\bdips?\b", re.IGNORECASE
+        terms(
+            r"push ups?\b",
+            r"press ups?\b",
+            "mountain climber",
+            "burpee",
+            "handstand",
+            "plank",
+            "bear crawl",
+            r"\bdips?\b",
         ),
         re.compile(r"forearm|elbow", re.IGNORECASE),
         "anything with body weight on the hands (push-ups, hand planks, mountain climbers, dips, "
@@ -116,9 +151,15 @@ LIMITATION_GUARDS: tuple[LimitationGuard, ...] = (
     ),
     LimitationGuard(
         re.compile(r"lower back|back pain", re.IGNORECASE),
-        re.compile(
-            r"deadlift|good ?morning|sit[- ]?ups?\b|russian twist|superman|\bv[- ]?ups?\b|jackknife",
-            re.IGNORECASE,
+        terms(
+            "deadlift",
+            r"\brdls?\b",
+            "good morning",
+            r"sit ups?\b",
+            "russian twist",
+            "superman",
+            r"\bv ups?\b",
+            "jack knife",
         ),
         None,
         "spinal loading or flexion under load (deadlifts, good mornings, sit-ups, Russian twists, supermans)",
@@ -126,9 +167,28 @@ LIMITATION_GUARDS: tuple[LimitationGuard, ...] = (
 )
 
 # Stretches and mobility drills, which belong in the warm-up or cool-down, not the main table.
-STRETCH_PATTERN = re.compile(
-    r"stretch|forward fold|cat[- ]?cow|child'?s pose|mobility|foam roll|breathing|arm circles|hip circles",
-    re.IGNORECASE,
+# Yoga poses and dynamic mobility drills count too.
+STRETCH_PATTERN = terms(
+    "stretch",
+    "forward fold",
+    "cat cow",
+    "child'?s pose",
+    "mobility",
+    "foam roll",
+    "breathing",
+    "arm circle",
+    "hip circle",
+    "yoga",
+    "pigeon",
+    "cobra pose",
+    "downward dog",
+    "upward dog",
+    "sun salutation",
+    "leg swing",
+    "arm swing",
+    "hip opener",
+    "thoracic",
+    "inch worm",
 )
 # A note in parentheses inside an exercise name, e.g. "(no load overhead)".
 PARENTHETICAL_NOTE_PATTERN = re.compile(r"\([^)]*\)")
@@ -142,18 +202,52 @@ SECTION_HEADING_PATTERN = re.compile(r"^##\s")
 # tells the model. The tier is the best option selected (gym > dumbbells > none). Notes in
 # parentheses are ignored, as for limitations. Cardio machines are full phrases, never a bare
 # "bike", which would catch "Bicycle Crunch".
+# "Air Bike Crunch" is the bicycle crunch, not the cardio machine.
 _NOT_AT_HOME = (
-    r"barbell|kettle ?bells?|\bkbs?\b|cable|machine|\bband(s|ed)?\b|pull[- ]?ups?\b|chin[- ]?ups?\b"
-    r"|\bbar\b|leg press|lat pull-?downs?|\bsmith\b|\bsled\b|\btrx\b|suspension|treadmill|\browers?\b"
-    r"|(exercise|stationary|assault|air|spin) bike|elliptical|ski ?-?erg|push-?downs?|face pulls?"
-    r"|pec deck|leg extensions?|landmine|\brack\b|\bplates?\b|\brings?\b|\bballs?\b"
-    r"|(in|de)cline\s+(dumbbell|db)\b"
+    "bar bell",
+    "kettle bell",
+    r"\bkbs?\b",
+    "cable",
+    "machine",
+    r"\bband(s|ed)?\b",
+    "mini band",
+    r"pull ups?\b",
+    r"chin ups?\b",
+    r"\bbar\b",
+    "leg press",
+    "lat pull down",
+    r"\bsmith\b",
+    r"\bsled\b",
+    r"\btrx\b",
+    "suspension",
+    "tread mill",
+    r"\browers?\b",
+    "row erg",
+    "ski erg",
+    "(exercise|stationary|assault|spin) bike",
+    "air bike(?! crunch)",
+    "elliptical",
+    "push down",
+    "face pull",
+    "pec deck",
+    "leg extension",
+    "hack squat",
+    "preacher curl",
+    "hip (ab|ad)ductor",
+    "battle rope",
+    "sand bag",
+    "land mine",
+    r"\brack\b",
+    r"\bplates?\b",
+    r"\brings?\b",
+    r"\bballs?\b",
+    r"(in|de)cline\s+(dumbbell|db)\b",
 )
-_DUMBBELL = r"dumb-?b?ells?|\bdbs?\b|goblet|renegade|skull ?crushers?"
+_DUMBBELL = ("dumb b?ell", r"\bdbs?\b", "goblet", "renegade", "skull crusher")
 EQUIPMENT_BANNED: dict[str, re.Pattern[str] | None] = {
     EQUIPMENT_GYM: None,
-    EQUIPMENT_DUMBBELLS: re.compile(_NOT_AT_HOME, re.IGNORECASE),
-    EQUIPMENT_NONE: re.compile(f"{_NOT_AT_HOME}|{_DUMBBELL}", re.IGNORECASE),
+    EQUIPMENT_DUMBBELLS: terms(*_NOT_AT_HOME),
+    EQUIPMENT_NONE: terms(*_NOT_AT_HOME, *_DUMBBELL),
 }
 # Only a full gym has a bench, but a chair, the floor, a sofa or the stairs can stand in for
 # one: "Bench Dip (use a chair)" is fine at home, "Bench Step-up" is not.
@@ -168,7 +262,9 @@ WARM_COOL_LINE = re.compile(
 )
 # Splits free text into items, so "Forearm plank or push-ups" is checked item by item (the
 # wrist guard's "forearm" would otherwise excuse the whole line). Not inside parentheses.
-TEXT_ITEM_SPLIT = re.compile(r"(?:[,;+/]|\.\s|\s(?:then|and|or)\s)(?![^(]*\))", re.IGNORECASE)
+TEXT_ITEM_SPLIT = re.compile(r"(?:[,;+/&]|\.\s|\s(?:then|and|or|with)\s)(?![^(]*\))", re.IGNORECASE)
+# An item that rules a movement out ("No jump, touch opposite toe") doesn't instruct it.
+NEGATED_ITEM_PATTERN = re.compile(r"^\s*(?:no|avoid|without|don'?t|do not|never)\b", re.IGNORECASE)
 # Minutes as written, e.g. "5" or "5-10" in "(5-10 min)".
 MINUTES_PATTERN = re.compile(r"(\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?)\s*(?:min|mins|minutes?)\b", re.I)
 # Fixed lines that replace a warm-up or cool-down that breaks a limitation. Ramp-up sets of the
@@ -181,12 +277,31 @@ COOL_DOWN_SAFE_LINE = (
 # --- Circuits and the session-time estimate ----------------------------------------------
 # A table row that heads a circuit rather than naming an exercise, e.g.
 # "Circuit (repeat 4x, 60 s rest after each round):". The rows under it count once per round.
+# Only a name like this that ends in a colon or has no Reps / Time is a header (see
+# utils.circuit_header): "Hill Sprint (repeat 6x) | 6 | 20 s" and "Superset A: Push-up + Row | 3 |
+# 10" are exercises.
 CIRCUIT_HEADER_PATTERN = re.compile(r"^(?:circuit|superset|rounds?)\b|repeat\s*\d", re.IGNORECASE)
+# A row that is only rest, e.g. "Rest between rounds | 3 | - | 30 s" ("Rest-Pause Curl" is an exercise).
+REST_ROW_PATTERN = re.compile(r"^rest(?:\s|$)", re.IGNORECASE)
+# A note fit_to_session writes about the current length; replaced, not kept, when it runs again.
+STILL_OVER_NOTE = re.compile(
+    r"\n*^\*\*Note:\*\* [^\n]* still longer than your \d+-minute session[^\n]*$", re.M
+)
 CIRCUIT_ROUNDS_PATTERN = re.compile(r"repeat\s*(\d+)\s*x|(\d+)\s*rounds?", re.IGNORECASE)
 # Distances in the Reps cell: 0.3 s per metre is a 5 min/km run, 0.6 s a 10 min/km walk.
 RUN_SECONDS_PER_METRE = 0.3
 WALK_SECONDS_PER_METRE = 0.6
-METRES_PER_UNIT: dict[str, float] = {"m": 1, "km": 1000, "mi": 1609, "mile": 1609, "miles": 1609}
+# Keyed by the unit without a plural "s".
+METRES_PER_UNIT: dict[str, float] = {
+    "m": 1,
+    "metre": 1,
+    "meter": 1,
+    "km": 1000,
+    "kilometre": 1000,
+    "kilometer": 1000,
+    "mi": 1609,
+    "mile": 1609,
+}
 # A Markdown bullet line ("- item" or "* item"), and the "- " the model puts before circuit rows.
 BULLET_LINE_PATTERN = re.compile(r"^\s*[-*]\s+")
 LEADING_DASH_PATTERN = re.compile(r"^-\s+")

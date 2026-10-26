@@ -55,7 +55,7 @@ def test_an_overlong_day_is_trimmed_to_fit_and_labelled_honestly() -> None:
     assert day_minutes(fitted) <= 45
     assert stated_minutes(fitted) == [round(day_minutes(fitted))]
     assert "16.8 min" not in fitted  # the model's wrong arithmetic is gone
-    assert "**Note:** Day 1 shortened (fewer sets) to fit your 45-minute session." in fitted
+    assert "**Note:** Day 1 shortened (fewer sets; removed Superman) to fit your 45-minute session." in fitted
     assert "## Progression" in fitted
 
 
@@ -147,7 +147,10 @@ def test_shortened_and_still_over_days_get_separate_honest_notes() -> None:
     long_rows = [f"| Move {k} | 4 | 12 | 90 s | |" for k in range(6)]
     plan = day(1, long_rows) + "\n" + day(2, READABLE, warm=12) + "\n" + day(3, READABLE, warm=14)
     fitted = fit_to_session(plan, 20)
-    assert "**Note:** Day 1 shortened (fewer sets) to fit your 20-minute session." in fitted
+    assert (
+        "**Note:** Day 1 shortened (fewer sets; removed Move 3, Move 4 and Move 5) to fit your "
+        "20-minute session." in fitted
+    )
     assert (
         "**Note:** Day 2 (about 22 min) and Day 3 (about 24 min) are still longer than your 20-minute "
         "session; shorten the warm-up or skip the last set if you're short of time."
@@ -201,3 +204,49 @@ def test_fitting_twice_gives_the_same_text() -> None:
     plan = day(1, long_rows) + "\n" + day(2, READABLE, warm=10)
     once = fit_to_session(plan, 15)
     assert fit_to_session(once, 15) == once
+
+
+# --- fix round 1 (qe-bug-fixes) ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ("| Rest | 1 | 1:30 min | - | |", None),  # a rest row is not an exercise
+        ("| Plank | 2 | 1:30 min | 30 s | |", (2, 90 + 30)),  # the clock comes first, not "30 min"
+        ("| Walk | 1 | 2 kilometres | 0 s | |", (1, 2000 * 0.6)),
+        ("| Run | 1 | 1 mile | 0 s | |", (1, 1609 * 0.3)),
+        ("| Bike | 1 | 1 hr | 0 s | |", (1, 3600)),
+    ],
+)
+def test_the_first_time_or_distance_written_is_read(row: str, expected: tuple[int, float] | None) -> None:
+    assert _exercise_row(row) == expected
+
+
+def test_a_rest_row_counts_its_rest_and_is_never_trimmed() -> None:
+    rest = "| Rest between rounds | 3 | - | 30 s | |"
+    assert estimate_day_minutes(day(1, [*READABLE, rest])) == [
+        estimate_day_minutes(day(1, READABLE))[0] + 1.5
+    ]
+    fitted = fit_to_session(day(1, [*READABLE, rest]), 15)
+    assert rest in fitted
+
+
+def test_a_still_over_day_names_what_trimming_removed_in_a_note_that_stays() -> None:
+    long_rows = [f"| Move {k} | 4 | 12 | 90 s | |" for k in range(6)]
+    once = fit_to_session(day(1, long_rows, warm=10), 15)
+    assert "**Note:** Removed Move 3, Move 4 and Move 5 to shorten Day 1." in once
+    assert once.count("still longer") == 1
+    assert fit_to_session(once, 15) == once
+
+
+def test_a_day_that_only_rounds_down_to_fit_is_not_called_shortened() -> None:
+    rows = [f"| Move {k} | 1 | 8 | 0 s | |" for k in range(3)]  # one set each: nothing can come off
+    fitted = fit_to_session(day(1, rows, warm=7, cool=7), 15)  # 14 min + 72 s = 15.2, shown as 15
+    assert "about 15 min" in fitted and "Note:" not in fitted
+
+
+def test_two_shortened_days_are_joined_with_and() -> None:
+    long_rows = [f"| Move {k} | 4 | 12 | 90 s | |" for k in range(4)]
+    fitted = fit_to_session(day(1, long_rows) + "\n" + day(2, long_rows), 30)
+    assert "**Note:** Day 1 and Day 2 shortened (fewer sets) to fit your 30-minute session." in fitted

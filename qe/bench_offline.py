@@ -24,7 +24,7 @@ from backend.llm import client as groq_client
 from backend.llm.planner import generate_workout_plan
 from backend.llm.prompts import build_user_prompt, system_prompt
 from tests.helpers import make_request
-from tests.qe_plans import SAFE_ROWS, build_plan
+from tests.qe_plans import SAFE_ROWS, build_plan, day_block
 
 LONG_ROWS = [
     *SAFE_ROWS,
@@ -33,6 +33,9 @@ LONG_ROWS = [
 ]
 PLAN_7 = build_plan(7, LONG_ROWS)  # 7 days x 11 rows, one banned exercise per day, overlong days
 PLAN_1 = build_plan(1)
+# Day 7 is stretches only: rejected by the non-training-day check, then PLAN_7 is accepted.
+STRETCHES = ["| Hamstring Stretch | 2 | 30 s | 0 s | x |", "| Child's Pose | 2 | 30 s | 0 s | x |"]
+STRETCH_DAY_7 = "\n".join([*(day_block(n, LONG_ROWS) for n in range(1, 7)), day_block(7, STRETCHES)])
 
 
 def percentile(sorted_ms: list[float], q: float) -> float:
@@ -113,6 +116,7 @@ def main() -> None:
         ("generate, 1 day, mocked", [PLAN_1], 1),
         ("generate, 7 days, mocked", [PLAN_7], 7),
         ("generate, 7 days, retry (wrong day count first)", [build_plan(6), PLAN_7], 7),
+        ("generate, 7 days, retry (stretch-only day first)", [STRETCH_DAY_7, PLAN_7], 7),
     ]:
         failures = 0
         results.append(bench(name, run(responses, days), runs, lambda: failures))  # noqa: B023

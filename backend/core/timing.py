@@ -16,6 +16,7 @@ from backend.core.constants import (
     PARENTHETICAL_NOTE_PATTERN,
     RUN_SECONDS_PER_METRE,
     SECONDS_PER_REP,
+    STILL_OVER_NOTE,
     WALK_SECONDS_PER_METRE,
     WARM_COOL_LINE,
 )
@@ -25,15 +26,21 @@ from backend.core.utils import (
     join_and,
     join_row,
     plain_text,
+    rest_row,
     split_row,
     table_name,
+    warm_cool_text,
 )
 
 _DURATION = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:-\s*\d+(?:\.\d+)?\s*)?(s|sec|secs|seconds?|min|mins|minutes?)\b", re.IGNORECASE
+    r"(\d+(?:\.\d+)?)\s*(?:-\s*\d+(?:\.\d+)?\s*)?(s|sec|secs|seconds?|min|mins|minutes?|h|hrs?|hours?)\b",
+    re.IGNORECASE,
 )
 _CLOCK = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")  # "1:30"
-_DISTANCE = re.compile(r"(\d+(?:\.\d+)?)\s*(km|miles?|mi|m)\b", re.IGNORECASE)  # "m" then "in" is not metres
+# "m" then "in" is not metres; the unit is looked up without a plural "s" (see METRES_PER_UNIT).
+_DISTANCE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(kilomet(?:re|er)s?|km|miles?|mi|met(?:re|er)s?|m)\b", re.IGNORECASE
+)
 _NUMBER = re.compile(r"\d+")
 _PER_SIDE = re.compile(r"each|per side|per leg|per arm|/side|/leg|/arm", re.IGNORECASE)
 _SESSION_LINE = re.compile(r"^\s*\*\*Session time", re.IGNORECASE)
@@ -42,15 +49,19 @@ Row = tuple[int, int, float]
 
 
 def _duration_seconds(text: str) -> float | None:
-    """Seconds in '30 s', '45 sec', '1 min', '1-2 min' (lower bound) or '1:30'; None if no time."""
+    """Seconds in '30 s', '45 sec', '1 min', '1-2 min' (lower bound), '1 hour' or '1:30'; None if no time.
+
+    The first time written wins, so "(8 min): 5 min march, then 0:30 arm swings" is 8 minutes.
+    """
     text = plain_text(text)
-    if clock := _CLOCK.search(text):
-        return int(clock.group(1)) * 60 + int(clock.group(2))
-    match = _DURATION.search(text)
-    if not match:
+    found = [match for match in (_CLOCK.search(text), _DURATION.search(text)) if match]
+    if not found:
         return None
-    value = float(match.group(1))
-    return value * 60 if match.group(2).lower().startswith("m") else value
+    match = min(found, key=lambda m: m.start())
+    if match.re is _CLOCK:
+        return int(match.group(1)) * 60 + int(match.group(2))
+    unit = match.group(2).lower()
+    return float(match.group(1)) * (3600 if unit.startswith("h") else 60 if unit.startswith("m") else 1)
 
 
 def _distance_seconds(text: str, name: str) -> float | None:
@@ -59,7 +70,8 @@ def _distance_seconds(text: str, name: str) -> float | None:
     if not match:
         return None
     pace = WALK_SECONDS_PER_METRE if "walk" in name.lower() else RUN_SECONDS_PER_METRE
-    return float(match.group(1)) * METRES_PER_UNIT[match.group(2).lower()] * pace
+    unit = match.group(2).lower()
+    return float(match.group(1)) * METRES_PER_UNIT[unit.removesuffix("s")] * pace
 
 
 def _exercise_row(line: str) -> tuple[int, float] | None:
@@ -124,8 +136,9 @@ def _rounds(header: str) -> int:
 def _read_day(lines: list[str], block: range) -> tuple[float, list[Row], int]:
     """One day's fixed seconds, trimmable exercise rows, and number of exercise rows that can't be read.
 
-    Fixed seconds are never trimmed: the warm-up and cool-down, and circuits, whose rows count
-    once per round plus the rest between rounds (the first time on the header row).
+    Fixed seconds are never trimmed: the warm-up and cool-down, rest rows ("Rest between rounds
+    | 3 | - | 30 s"), and circuits, whose rows count once per round plus the rest between rounds
+    (the first time on the header row).
     """
     fixed, rows, unreadable, rounds = 0.0, [], 0, 0
     for i in block:
@@ -133,10 +146,14 @@ def _read_day(lines: list[str], block: range) -> tuple[float, list[Row], int]:
         if not line.lstrip().startswith("|"):
             rounds = 0  # a circuit runs to the end of its table
             if match := WARM_COOL_LINE.match(plain_text(line)):
-                fixed += _duration_seconds(f"{match.group(2)} {match.group(3)}") or 0
+                fixed += _duration_seconds(warm_cool_text(match)) or 0
         elif circuit_header(line):
             rounds = _rounds(line)
             fixed += rounds * (_duration_seconds(line) or 0)
+        elif rest_row(line):
+            cells = [*split_row(line), "", "", ""]
+            sets = int(n.group()) if (n := _NUMBER.search(cells[1])) else 1
+            fixed += sets * ((_duration_seconds(cells[2]) or 0) + (_duration_seconds(cells[3]) or 0))
         elif table_name(line) is not None:
             if (row := _exercise_row(line)) is None:
                 unreadable += 1
@@ -154,28 +171,32 @@ def estimate_day_minutes(plan: str) -> list[float]:
     return [(fixed + sum(sets * per_set for _, sets, per_set in rows)) / 60 for fixed, rows, _ in days]
 
 
-def _fit_sessions(plan: str, session_minutes: int) -> tuple[str, list[int], list[str]]:
+def _fit_sessions(plan: str, session_minutes: int) -> tuple[str, list[str]]:
     """Trim days that run over `session_minutes` and write each day's estimated length.
 
     See `_trim` for how a long day is shortened; unreadable rows and circuits are left alone,
-    and a day with unreadable rows says "at least". Returns the updated plan, the days that were
-    shortened to fit, and the days still over (e.g. "Day 1 (about 18 min)").
+    and a day with unreadable rows says "at least". Returns the updated plan and the notes to
+    add: the days shortened to fit and how, every exercise removed, and the days still over.
     """
     lines = plan.splitlines()
     dropped: set[int] = set()
     inserts: dict[int, list[str]] = {}
     shortened: list[int] = []
     still_over: list[str] = []
+    fewer_sets, cut, notes = False, [], []
 
     for day, block in day_blocks(lines):
         fixed, rows, unreadable = _read_day(lines, block)
         budget = session_minutes * 60 - fixed
         work = sum(sets * per_set for _, sets, per_set in rows)
 
-        trimmed = bool(rows) and work > budget
-        if trimmed:
+        reduced, removed_names = False, []
+        if bool(rows) and work > budget:
+            before = {i: sets for i, sets, _ in rows}
             rows, removed = _trim(rows, budget)
             dropped.update(removed)
+            removed_names = [name for i in sorted(removed) if (name := table_name(lines[i]))]
+            reduced = any(sets < before[i] for i, sets, _ in rows)
             for i, sets, _ in rows:
                 lines[i] = _with_sets(lines[i], sets)
             work = sum(sets * per_set for _, sets, per_set in rows)
@@ -184,8 +205,12 @@ def _fit_sessions(plan: str, session_minutes: int) -> tuple[str, list[int], list
         amount = f"at least {minutes} min" if unreadable else f"about {minutes} min"
         if minutes > session_minutes:
             still_over.append(f"Day {day} ({amount})")
-        elif trimmed:
+            if removed_names:  # its own note: the still-over note is rewritten on every run
+                notes.append(f"**Note:** Removed {join_and(removed_names)} to shorten Day {day}.")
+        elif reduced or removed_names:
             shortened.append(day)
+            fewer_sets = fewer_sets or reduced
+            cut.extend(removed_names)
 
         basis = (
             "estimated from the sets above; some rows have no fixed time"
@@ -206,25 +231,28 @@ def _fit_sessions(plan: str, session_minutes: int) -> tuple[str, list[int], list
         if i not in dropped:
             out.append(line)
         out.extend(inserts.get(i, []))
-    return "\n".join(out), shortened, still_over
-
-
-def fit_to_session(plan: str, session_minutes: int) -> str:
-    """Make every day fit `session_minutes` where it can, and say which days were shortened or still run over.
-
-    A note already in the plan (e.g. from an earlier run, before a swap) is not added again.
-    """
-    plan, shortened, still_over = _fit_sessions(plan, session_minutes)
-    notes = []
     if shortened:
-        days = ", ".join(f"Day {n}" for n in shortened)
-        notes.append(f"**Note:** {days} shortened (fewer sets) to fit your {session_minutes}-minute session.")
+        how = "; ".join(
+            [*(["fewer sets"] if fewer_sets else []), *([f"removed {join_and(cut)}"] if cut else [])]
+        )
+        days = join_and([f"Day {n}" for n in shortened])
+        notes.insert(0, f"**Note:** {days} shortened ({how}) to fit your {session_minutes}-minute session.")
     if still_over:
         verb = "is" if len(still_over) == 1 else "are"
         notes.append(
             f"**Note:** {join_and(still_over)} {verb} still longer than your {session_minutes}-minute "
             "session; shorten the warm-up or skip the last set if you're short of time."
         )
+    return "\n".join(out), notes
+
+
+def fit_to_session(plan: str, session_minutes: int) -> str:
+    """Make every day fit `session_minutes` where it can, and say which days were shortened or still run over.
+
+    A "shortened" note already in the plan (e.g. from an earlier run, before a swap) is not added
+    again; an old "still longer" note is replaced, because the day's length may have changed.
+    """
+    plan, notes = _fit_sessions(STILL_OVER_NOTE.sub("", plan), session_minutes)
     for note in notes:
         if note not in plan:
             plan = f"{plan}\n\n{note}"

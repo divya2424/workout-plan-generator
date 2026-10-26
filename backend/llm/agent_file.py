@@ -10,7 +10,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from backend.core.constants import AGENT_FILE
+from backend.core.constants import AGENT_FILE, PROMPT_SECTIONS
 
 _MARKER = re.compile(r"^<!-- prompt: ([a-z-]+) -->$", re.MULTILINE)
 # Any line that looks like a marker; each must be an exact _MARKER, or two sections would merge.
@@ -25,7 +25,11 @@ def load_sections(path: Path = AGENT_FILE) -> dict[str, str]:
     if len(_MARKER_LIKE.findall(text)) != len(_MARKER.findall(text)):
         raise ValueError(f"{path} has a malformed <!-- prompt: name --> marker")
     parts = _MARKER.split(text)  # [preamble, name1, body1, name2, body2, ...]
-    return {name: body.strip() for name, body in zip(parts[1::2], parts[2::2], strict=True)}
+    sections = {name: body.strip() for name, body in zip(parts[1::2], parts[2::2], strict=True)}
+    # A marker misspelt beyond what _MARKER_LIKE sees ("<!--- prompt", "promt") loses its section.
+    if missing := [name for name in PROMPT_SECTIONS if name not in sections]:
+        raise ValueError(f"{path} is missing the prompt section(s) {', '.join(missing)}")
+    return sections
 
 
 def reload() -> None:

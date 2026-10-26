@@ -13,8 +13,13 @@ from backend.llm.agent_file import learned_rules_block, render
 
 
 def _as_data(text: str) -> str:
-    """User text without <client_notes> tags, so it can't close its own data block early."""
-    return CLIENT_NOTES_TAG.sub("", text).strip()
+    """User text without <client_notes> tags, so it can't close its own data block early.
+
+    Stripped until none is left, so a nested "</client_no</client_notes>tes>" can't rebuild one.
+    """
+    while (stripped := CLIENT_NOTES_TAG.sub("", text)) != text:
+        text = stripped
+    return text.strip()
 
 
 def system_prompt(learned_rules: list[str] | None = None) -> str:

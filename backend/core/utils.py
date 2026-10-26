@@ -36,8 +36,10 @@ from backend.core.constants import (
     MIN_EXERCISES_PER_DAY_AFTER_REPAIR,
     MIN_SESSION_MINUTES,
     MINUTES_PATTERN,
+    NEGATED_ITEM_PATTERN,
     NOTES_CELL,
     PARENTHETICAL_NOTE_PATTERN,
+    REST_ROW_PATTERN,
     SECTION_HEADING_PATTERN,
     STRETCH_PATTERN,
     SWAP_ROW_CELLS,
@@ -210,7 +212,7 @@ def _repair_session_text(plan: str, limitations: str) -> str:
     lines = plan.splitlines()
     changed: list[str] = []
     for i, part, match in _warm_cool_lines(lines):
-        if _text_conflicts(match.group(3), limitations):
+        if _text_conflicts(warm_cool_text(match), limitations):
             lines[i] = _safe_warm_cool(match)
             changed.append(part)
     for i, line in enumerate(lines):
@@ -219,7 +221,8 @@ def _repair_session_text(plan: str, limitations: str) -> str:
                 "The AI wrote a circuit that conflicts with your limitations. Please try again.",
                 model_hint=_limitation_hint(broken),
             )
-        if table_name(line) and (cells := split_row(line)) != (
+        # Every row's Notes cell, circuit headers and rest rows included.
+        if _row_name(line) and (cells := split_row(line)) != (
             kept := without_banned_notes(cells, limitations)
         ):
             lines[i] = join_row(kept)
@@ -239,6 +242,11 @@ def _warm_cool_lines(lines: list[str]) -> Iterator[tuple[int, str, re.Match[str]
             if match := WARM_COOL_LINE.match(plain_text(lines[i])):
                 kind = "warm-up" if match.group(1).lower() == "warm" else "cool-down"
                 yield i, f"Day {day} {kind}", match
+
+
+def warm_cool_text(match: re.Match[str]) -> str:
+    """Everything after "Warm-up" or "Cool-down" on a label line, inside the bold or after it."""
+    return f"{match.group(2)} {match.group(3)}"
 
 
 def _safe_warm_cool(match: re.Match[str]) -> str:
@@ -262,8 +270,12 @@ def without_banned_notes(cells: list[str], limitations: str) -> list[str]:
 
 
 def _text_conflicts(text: str, limitations: str) -> list[tuple[LimitationGuard, list[str]]]:
-    """The guards that free text breaks, checked item by item (see TEXT_ITEM_SPLIT)."""
-    return _broken_guards(TEXT_ITEM_SPLIT.split(plain_text(text)), limitations)
+    """The guards that free text breaks, checked item by item (see TEXT_ITEM_SPLIT).
+
+    An item that rules a movement out ("No jump, touch opposite toe") is skipped.
+    """
+    items = TEXT_ITEM_SPLIT.split(plain_text(text))
+    return _broken_guards([item for item in items if not NEGATED_ITEM_PATTERN.match(item)], limitations)
 
 
 def find_session_text_conflicts(plan: str, limitations: str) -> list[str]:
@@ -275,7 +287,7 @@ def find_session_text_conflicts(plan: str, limitations: str) -> list[str]:
     lines = plan.splitlines()
     found: list[str] = []
     for i, part, match in _warm_cool_lines(lines):
-        text = [match.group(3)]
+        text = [warm_cool_text(match)]
         for line in lines[i + 1 :]:
             if not BULLET_LINE_PATTERN.match(line) or WARM_COOL_LINE.match(line):
                 break
@@ -366,7 +378,9 @@ def _fix_table_separators(plan: str) -> str:
     lines = plan.splitlines()
     for i, line in enumerate(lines):
         if TABLE_SEPARATOR_PATTERN.match(line):
-            lines[i] = "|" + "---|" * len(split_row(line))
+            # As many cells as the header above, which a garbled `|---+---+---|` doesn't show.
+            above = lines[i - 1] if i else ""
+            lines[i] = "|" + "---|" * len(split_row(above if above.lstrip().startswith("|") else line))
     return "\n".join(lines)
 
 
@@ -389,7 +403,10 @@ _PLAIN_TEXT = str.maketrans(
         "\N{NON-BREAKING HYPHEN}": "-",
         "\N{HYPHEN}": "-",
         "\N{EN DASH}": "-",
+        "\N{EM DASH}": "-",
+        "\N{RIGHT SINGLE QUOTATION MARK}": "'",
         "\N{NARROW NO-BREAK SPACE}": " ",
+        "\N{THIN SPACE}": " ",
         "\N{NO-BREAK SPACE}": " ",
     }
 )
@@ -424,19 +441,36 @@ def _row_name(line: str) -> str | None:
 
 
 def circuit_header(line: str) -> str | None:
-    """The text of a circuit header row, e.g. "Circuit (repeat 4x, 60 s rest):", else None."""
+    """The text of a circuit header row, e.g. "Circuit (repeat 4x, 60 s rest):", else None.
+
+    The name must look like a circuit and either end in a colon or have no Reps / Time, so
+    "Hill Sprint (repeat 6x) | 6 | 20 s" and "Superset A: Push-up + Row | 3 | 10" stay exercises.
+    """
     name = _row_name(line)
-    return name if name and CIRCUIT_HEADER_PATTERN.search(name) else None
+    if not name or not CIRCUIT_HEADER_PATTERN.search(name):
+        return None
+    return name if name.endswith(":") or not _has_reps(line) else None
+
+
+def rest_row(line: str) -> bool:
+    """True for a row that is only rest, e.g. "Rest between rounds | 3 | - | 30 s"."""
+    name = _row_name(line)
+    return bool(name and REST_ROW_PATTERN.match(name))
+
+
+def _has_reps(line: str) -> bool:
+    cells = split_row(line)
+    return len(cells) > 2 and bool(cells[2].strip("-\N{EN DASH}\N{EM DASH} "))
 
 
 def table_name(line: str) -> str | None:
     """The exercise name if `line` is an exercise row of a Markdown table, else None.
 
-    Lines that aren't table rows, the header and separator rows, and circuit header rows give
-    None. A leading "- " (the model's way of nesting rows under a circuit) is dropped.
+    Lines that aren't table rows, the header and separator rows, circuit header rows and rest
+    rows give None. A leading "- " (the model's way of nesting rows under a circuit) is dropped.
     """
     name = _row_name(line)
-    return None if name is None or CIRCUIT_HEADER_PATTERN.search(name) else name
+    return None if name is None or circuit_header(line) or rest_row(line) else name
 
 
 def list_exercises(plan: str) -> list[str]:
