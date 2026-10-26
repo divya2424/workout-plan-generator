@@ -5,6 +5,7 @@ None of these call Groq or Streamlit, so they are cheap to test on their own.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Collection
 
@@ -24,6 +25,7 @@ from backend.core.constants import (
     MAX_LIMITATIONS_CHARS,
     MAX_SESSION_MINUTES,
     MIN_DAYS,
+    MIN_EXERCISES_PER_DAY_AFTER_REPAIR,
     MIN_SESSION_MINUTES,
     PARENTHETICAL_NOTE_PATTERN,
     SWAP_ROW_CELLS,
@@ -32,6 +34,8 @@ from backend.core.constants import (
 )
 from backend.core.errors import PlanGenerationError, RetryableError
 from backend.core.models import PlanRequest
+
+logger = logging.getLogger(__name__)
 
 
 def validate_inputs(request: PlanRequest) -> list[str]:
@@ -76,8 +80,9 @@ def describe_equipment(equipment: Collection[str]) -> list[str]:
 def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
     """Validate the model's output and return a cleaned-up plan.
 
-    Raises a retryable error if the response is empty, doesn't contain exactly the requested
-    training days, or names an exercise that clearly conflicts with the user's limitations.
+    Raises a retryable error if the response is empty or doesn't contain exactly the requested
+    training days. Exercises that clearly conflict with the user's limitations are dropped,
+    with a note, when every day keeps enough exercises; otherwise that is retryable too.
     Appends the disclaimer if the model forgot it.
     """
     plan = plan.strip()
@@ -93,7 +98,13 @@ def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
         )
 
     conflicts = find_limitation_conflicts(list_exercises(plan), limitations)
-    if conflicts:
+    repaired = _drop_exercises(plan, conflicts) if conflicts else None
+    if repaired is not None:
+        logger.info("repaired plan by dropping %d conflicting exercise(s)", len(conflicts))
+        removed = ", ".join(conflicts)
+        clash = "it conflicts" if len(conflicts) == 1 else "they conflict"
+        plan = f"{repaired}\n\n**Note:** Removed {removed} because {clash} with your limitations."
+    elif conflicts:
         raise RetryableError(
             f"The AI included an exercise that conflicts with your limitations ({conflicts[0]}). "
             "Please try again.",
@@ -104,6 +115,27 @@ def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
     if limitations and f"{DISCLAIMER_MARKER}:" not in plan:
         plan = f"{plan}\n\n{FALLBACK_DISCLAIMER}"
     return plan
+
+
+def _drop_exercises(plan: str, names: list[str]) -> str | None:
+    """`plan` without the table rows for `names`, or None if that leaves a day too thin."""
+    drop = set(names)
+    kept: list[str] = []
+    per_day: dict[int, int] = {}
+    day: int | None = None
+    for line in plan.splitlines():
+        if heading := DAY_HEADING_PATTERN.match(line):
+            day = int(heading.group(1))
+            per_day[day] = 0
+        name = table_name(line)
+        if name in drop:
+            continue
+        if name and day is not None:
+            per_day[day] += 1
+        kept.append(line)
+    if any(count < MIN_EXERCISES_PER_DAY_AFTER_REPAIR for count in per_day.values()):
+        return None
+    return "\n".join(kept)
 
 
 def _fix_table_separators(plan: str) -> str:

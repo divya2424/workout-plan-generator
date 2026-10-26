@@ -59,3 +59,27 @@ def mock_client(*responses: object) -> MagicMock:
 def status_error(cls: type[groq.APIStatusError], code: int) -> groq.APIStatusError:
     request = httpx.Request("POST", "https://api.groq.com")
     return cls("boom", response=httpx.Response(code, request=request), body=None)
+
+
+RICH_PLAN = """## Plan Overview
+An upper/lower split.
+
+## Day 1 - Upper
+| Exercise | Sets | Reps / Time | Rest | Notes |
+|---|---|---|---|---|
+| Bench Press | 3 | 8 | 90s | Elbows at 45 |
+| Seated Dumbbell Shoulder Press | 3 | 10 | 60s | Brace |
+| Cable Row | 3 | 10 | 60s | Squeeze |
+| Triceps Pushdown | 3 | 12 | 45s | Elbows pinned |
+
+## Day 2 - Lower
+| Exercise | Sets | Reps / Time | Rest | Notes |
+|---|---|---|---|---|
+| Back Squat | 3 | 8 | 90s | Depth to parallel |
+| Romanian Deadlift | 3 | 10 | 90s | Hinge |
+| Leg Curl | 3 | 12 | 60s | Slow |
+| Calf Raise | 3 | 15 | 45s | Pause at top |
+
+## Progression
+- Add load weekly.
+"""

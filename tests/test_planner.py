@@ -29,7 +29,7 @@ from backend.llm import client as groq_client
 from backend.llm import planner, retry
 from backend.llm.planner import generate_workout_plan
 from backend.llm.prompts import build_user_prompt
-from tests.helpers import GOOD_PLAN, VALID, fake_response, make_request, mock_client, status_error
+from tests.helpers import GOOD_PLAN, RICH_PLAN, VALID, fake_response, make_request, mock_client, status_error
 
 # --- input validation ---------------------------------------------------------
 
@@ -415,3 +415,35 @@ def test_transport_retries_resend_the_original_request() -> None:
         generate_workout_plan(**VALID, api_key="k")
     first, second = (c.kwargs["messages"] for c in client.chat.completions.create.call_args_list)
     assert first == second
+
+
+# --- repair -----------------------------------------------------------------------------
+
+
+def test_a_few_conflicting_exercises_are_dropped_without_a_retry() -> None:
+    client = mock_client(fake_response(RICH_PLAN))
+    with patch.object(groq_client, "Groq", return_value=client):
+        plan = generate_workout_plan(**{**VALID, "limitations": "no overhead pressing"}, api_key="k")
+    assert client.chat.completions.create.call_count == 1
+    assert "| Seated Dumbbell Shoulder Press |" not in plan  # the row is gone
+    assert "Removed Seated Dumbbell Shoulder Press" in plan  # and the user is told why
+    assert "| Bench Press |" in plan and "| Calf Raise |" in plan  # everything else stays
+    assert "Disclaimer:" in plan
+
+
+def test_repair_is_not_used_when_a_day_would_be_left_too_thin() -> None:
+    thin = RICH_PLAN.replace("Bench Press", "Arnold Press").replace("Cable Row", "Overhead Press")
+    client = mock_client(
+        fake_response(thin), fake_response(RICH_PLAN.replace("Seated Dumbbell Shoulder", "Incline"))
+    )
+    with patch.object(groq_client, "Groq", return_value=client):
+        plan = generate_workout_plan(**{**VALID, "limitations": "no overhead pressing"}, api_key="k")
+    assert client.chat.completions.create.call_count == 2  # 3 of 4 Day 1 exercises banned: ask again
+    assert "Removed" not in plan and "| Incline Press |" in plan
+
+
+def test_repair_note_lists_every_removed_exercise() -> None:
+    pushdown = "| Triceps Pushdown | 3 | 12 | 45s | Elbows pinned |"
+    extra = f"{pushdown}\n| Arnold Press | 3 | 10 | 60s | x |\n| Face Pull | 3 | 15 | 45s | x |"
+    plan = check_plan(RICH_PLAN.replace(pushdown, extra), 2, "no overhead pressing")  # Day 1: 6 -> 4
+    assert "Removed Seated Dumbbell Shoulder Press, Arnold Press because they conflict" in plan

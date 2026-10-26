@@ -111,6 +111,9 @@ SESSION_MINUTES_STEP = 5
 MAX_LIMITATIONS_CHARS = 300
 MAX_SWAP_REASON_CHARS = 300
 SWAP_ROW_CELLS = 5  # Exercise | Sets | Reps / Time | Rest | Notes
+# A plan with a few banned exercises is repaired by dropping them, as long as every day still
+# has at least this many; otherwise the model is asked again.
+MIN_EXERCISES_PER_DAY_AFTER_REPAIR = 3
 
 DEFAULT_MODEL = "openai/gpt-oss-20b"
 TEMPERATURE = 0.7  # some variety so "Regenerate" gives a different plan
