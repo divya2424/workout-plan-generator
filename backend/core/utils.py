@@ -28,6 +28,7 @@ from backend.core.constants import (
     MIN_EXERCISES_PER_DAY_AFTER_REPAIR,
     MIN_SESSION_MINUTES,
     PARENTHETICAL_NOTE_PATTERN,
+    STRETCH_PATTERN,
     SWAP_ROW_CELLS,
     TABLE_SEPARATOR_PATTERN,
     LimitationGuard,
@@ -113,6 +114,13 @@ def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
             f"{repaired}\n\n**Note:** Removed {', '.join(conflicts)} because {clash} with your limitations."
         )
 
+    stretches = [name for name in list_exercises(plan) if STRETCH_PATTERN.search(plain_text(name))]
+    if stretches and (without := _drop_exercises(plan, stretches)) is not None:
+        moved = ", ".join(stretches)
+        plan = (
+            f"{without}\n\n**Note:** Moved {moved} out of the main exercises (stretches go in the cool-down)."
+        )
+
     plan = _fix_table_separators(plan)
     if limitations and f"{DISCLAIMER_MARKER}:" not in plan:
         plan = f"{plan}\n\n{FALLBACK_DISCLAIMER}"
@@ -145,7 +153,7 @@ def _fix_table_separators(plan: str) -> str:
     lines = plan.splitlines()
     for i, line in enumerate(lines):
         if TABLE_SEPARATOR_PATTERN.match(line):
-            lines[i] = "|" + "---|" * len(_split_row(line))
+            lines[i] = "|" + "---|" * len(split_row(line))
     return "\n".join(lines)
 
 
@@ -162,7 +170,24 @@ def resolve_credentials(api_key: str | None, model: str | None) -> tuple[str, st
     return key, model or os.getenv("GROQ_MODEL") or DEFAULT_MODEL
 
 
-def _split_row(line: str) -> list[str]:
+# The model writes typographic dashes and spaces (e.g. a non-breaking hyphen in "Step-Up").
+_PLAIN_TEXT = str.maketrans(
+    {
+        "\N{NON-BREAKING HYPHEN}": "-",
+        "\N{HYPHEN}": "-",
+        "\N{EN DASH}": "-",
+        "\N{NARROW NO-BREAK SPACE}": " ",
+        "\N{NO-BREAK SPACE}": " ",
+    }
+)
+
+
+def plain_text(text: str) -> str:
+    """`text` with typographic dashes and spaces replaced by plain ones."""
+    return text.translate(_PLAIN_TEXT)
+
+
+def split_row(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
@@ -173,7 +198,7 @@ def table_name(line: str) -> str | None:
     """
     if not line.lstrip().startswith("|"):
         return None
-    name = _split_row(line)[0].strip("* ")
+    name = split_row(line)[0].strip("* ")
     if not name or name.lower() == "exercise" or set(name) <= set("-: "):
         return None
     return name
@@ -200,7 +225,7 @@ def _broken_guards(exercise_names: list[str], limitations: str) -> list[tuple[Li
             continue
         hits = []
         for name in exercise_names:
-            full = name.replace("\u2011", "-").replace("\u2010", "-")
+            full = plain_text(name)
             movement = PARENTHETICAL_NOTE_PATTERN.sub("", full)
             if guard.banned.search(movement) and not (guard.allowed and guard.allowed.search(full)):
                 hits.append(name)
@@ -230,7 +255,7 @@ def parse_swap_row(raw: str, old_name: str, existing: list[str], limitations: st
     taken = {name.lower() for name in [*existing, old_name]}
     for line in raw.splitlines():
         name = table_name(line)
-        cells = _split_row(line)
+        cells = split_row(line)
         if name is None or len(cells) != SWAP_ROW_CELLS:
             continue
         if name.lower() in taken:

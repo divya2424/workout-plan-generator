@@ -23,6 +23,7 @@ from backend.core.constants import (
 )
 from backend.core.errors import PlanGenerationError
 from backend.core.models import PlanRequest
+from backend.core.timing import fit_to_session
 from backend.core.utils import (
     check_plan,
     list_exercises,
@@ -72,7 +73,9 @@ def generate_workout_plan(
             api_key=key,
             model=model_name,
             max_tokens=min(MAX_TOKENS_CAP, BASE_MAX_TOKENS + TOKENS_PER_DAY * request.days_per_week),
-            parse=lambda raw: check_plan(raw, request.days_per_week, request.limitations),
+            parse=lambda raw: fit_to_session(
+                check_plan(raw, request.days_per_week, request.limitations), request.session_minutes
+            ),
         )
     except PlanGenerationError:
         raise

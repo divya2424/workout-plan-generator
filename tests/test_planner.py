@@ -418,3 +418,11 @@ def test_repair_note_lists_every_removed_exercise() -> None:
     extra = f"{pushdown}\n| Arnold Press | 3 | 10 | 60s | x |\n| Face Pull | 3 | 15 | 45s | x |"
     plan = check_plan(RICH_PLAN.replace(pushdown, extra), 2, "no overhead pressing")  # Day 1: 6 -> 4
     assert "Removed Seated Dumbbell Shoulder Press, Arnold Press because they conflict" in plan
+
+
+def test_stretches_are_moved_out_of_the_main_table() -> None:
+    with_stretch = RICH_PLAN.replace("Calf Raise", "Standing Hip Flexor Stretch")
+    plan = check_plan(with_stretch, 2)
+    assert "| Standing Hip Flexor Stretch |" not in plan
+    assert "Moved Standing Hip Flexor Stretch out of the main exercises" in plan
+    assert check_plan(RICH_PLAN, 2) == RICH_PLAN.strip()  # nothing to move: untouched
