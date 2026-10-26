@@ -6,8 +6,6 @@ through the Groq API.
 
 **Live demo:** https://workout-plan-gen.streamlit.app
 
-**Design document (HLD & LLD):** https://claude.ai/artifact/5WDpFsqSQ3o123LZ5f4sUT
-
 The demo runs on Groq's free tier (8,000 tokens per minute, roughly two plans a minute, and
 200,000 tokens a day). If
 several people use it at once you may see "Groq's rate limit was reached"; wait a minute and
