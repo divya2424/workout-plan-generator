@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# /feature workflow hand-off files (keep a feature's folder by committing it on purpose)
+work/

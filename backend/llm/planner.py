@@ -17,8 +17,6 @@ from backend.core.constants import (
     MAX_SWAP_REASON_CHARS,
     MAX_TOKENS_CAP,
     SWAP_MAX_TOKENS,
-    SWAP_SYSTEM_PROMPT,
-    SYSTEM_PROMPT,
     TOKENS_PER_DAY,
 )
 from backend.core.errors import PlanGenerationError
@@ -33,12 +31,17 @@ from backend.core.utils import (
     validate_inputs,
 )
 from backend.llm.client import Messages
-from backend.llm.prompts import build_swap_prompt, build_user_prompt
+from backend.llm.prompts import build_swap_prompt, build_user_prompt, swap_system_prompt, system_prompt
 from backend.llm.retry import complete_with_retries
 
 logger = logging.getLogger(__name__)
 
 _UNEXPECTED_ERROR = "Something went wrong while generating your plan."
+
+
+def plan_max_tokens(days_per_week: int) -> int:
+    """Output budget for a plan: it grows with the number of days (see constants.py)."""
+    return min(MAX_TOKENS_CAP, BASE_MAX_TOKENS + TOKENS_PER_DAY * days_per_week)
 
 
 def generate_workout_plan(
@@ -65,16 +68,17 @@ def generate_workout_plan(
 
         key, model_name = resolve_credentials(api_key, model)
         messages: Messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt()},
             {"role": "user", "content": build_user_prompt(request)},
         ]
         return complete_with_retries(
             messages,
             api_key=key,
             model=model_name,
-            max_tokens=min(MAX_TOKENS_CAP, BASE_MAX_TOKENS + TOKENS_PER_DAY * request.days_per_week),
+            max_tokens=plan_max_tokens(request.days_per_week),
             parse=lambda raw: fit_to_session(
-                check_plan(raw, request.days_per_week, request.limitations), request.session_minutes
+                check_plan(raw, request.days_per_week, request.limitations, equipment=request.equipment),
+                request.session_minutes,
             ),
         )
     except PlanGenerationError:
@@ -102,7 +106,9 @@ def swap_exercise(
     """Return `plan` with every table row for `exercise` replaced.
 
     Only the replacement row is requested from the model and patched into the plan, so a
-    swap is small, fast, and cannot alter the rest of the plan.
+    swap is small, fast, and cannot alter the rest of the plan. The row gets the same checks
+    as a plan's rows, and the session times are recomputed for `request.session_minutes`
+    (pass the request that produced the plan).
     """
     try:
         exercise = exercise.strip()
@@ -114,7 +120,7 @@ def swap_exercise(
         key, model_name = resolve_credentials(api_key, model)
         existing = list_exercises(plan)
         messages: Messages = [
-            {"role": "system", "content": SWAP_SYSTEM_PROMPT},
+            {"role": "system", "content": swap_system_prompt()},
             {
                 "role": "user",
                 "content": build_swap_prompt(
@@ -127,11 +133,12 @@ def swap_exercise(
             api_key=key,
             model=model_name,
             max_tokens=SWAP_MAX_TOKENS,
-            parse=lambda raw: parse_swap_row(raw, exercise, existing, request.limitations),
+            parse=lambda raw: parse_swap_row(raw, exercise, existing, request.limitations, request.equipment),
         )
         for i in rows:
             lines[i] = new_row
-        return "\n".join(lines)
+        # The new row changes the day's length: recompute (and trim) it like a fresh plan.
+        return fit_to_session("\n".join(lines), request.session_minutes)
     except PlanGenerationError:
         raise
     except Exception as exc:  # a bug or odd input must not crash the app

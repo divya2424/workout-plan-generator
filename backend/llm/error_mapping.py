@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import groq
 
 from backend.core.errors import PlanGenerationError, RetryableError
@@ -23,10 +25,18 @@ _RULES: tuple[tuple[type[Exception], str, bool], ...] = (
     (groq.APIConnectionError, "Couldn't reach Groq. Check your internet connection and try again.", True),
 )
 _SERVER_ERROR_MIN_STATUS = 500
+# A 429 for the daily token cap (shared with the live demo) lasts hours, not a minute.
+_DAILY_CAP = re.compile(r"tokens per day|\bTPD\b", re.IGNORECASE)
+_DAILY_CAP_MESSAGE = (
+    "Groq's daily token allowance for this app has been used up (it's shared with the live demo). "
+    "Please try again later, it resets within 24 hours."
+)
 
 
 def translate_error(exc: Exception, model: str) -> PlanGenerationError:
     """Map an SDK or unexpected exception to a friendly error. Only transient failures are retryable."""
+    if isinstance(exc, groq.RateLimitError) and _DAILY_CAP.search(f"{exc} {exc.body}"):
+        return PlanGenerationError(_DAILY_CAP_MESSAGE)
     for exc_type, message, retryable in _RULES:
         if isinstance(exc, exc_type):
             error_cls = RetryableError if retryable else PlanGenerationError

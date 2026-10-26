@@ -14,6 +14,8 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["live: calls the real Groq API (run with `-m live`; needs GROQ_API_KEY)"]
+addopts = "-m 'not live'"
 
 [dependency-groups]
 dev = [

@@ -6,7 +6,8 @@ through the Groq API.
 
 **Live demo:** https://workout-plan-gen.streamlit.app/
 
-The demo runs on Groq's free tier (8,000 tokens per minute, roughly two plans a minute). If
+The demo runs on Groq's free tier (8,000 tokens per minute, roughly two plans a minute, and
+200,000 tokens a day). If
 several people use it at once you may see "Groq's rate limit was reached"; wait a minute and
 try again.
 
@@ -40,21 +41,27 @@ uv run mypy backend frontend       # strict type checking
 ## Project structure
 
 ```
+agents/
+  workout-trainer.md  Every prompt the model sees, plus the rules it has learned (see below)
 frontend/
   app.py              Streamlit UI only: widgets, session state, rendering
 backend/
   core/               Shared building blocks (no network access)
-    constants.py        Input options, limits, model and timeout settings, system prompts
+    constants.py        Input options, limits, model, timeout and learning settings
     errors.py           PlanGenerationError, RetryableError
     models.py           PlanRequest: the client's profile as one immutable, comparable value
-    utils.py            Input validation, equipment text, response checks, table parsing, credentials
+    utils.py            Input validation, equipment text and check, response checks and repairs, table parsing
     timing.py           Estimates each day's length, trims days that run over, writes the real figure
   llm/                Everything about talking to the model
     planner.py          Public operations: generate_workout_plan() and swap_exercise()
-    prompts.py          User-prompt builders
+    agent_file.py       Reads prompt sections from the agent file and appends learned rules
+    prompts.py          Fills the agent file's templates with the client's profile
     retry.py            One retry for transient or malformed answers, with a corrective hint
     client.py           Shared Groq client, one chat completion
     error_mapping.py    Groq exceptions -> friendly errors (retryable or not)
+  learning/           The self-improvement loop (offline, never run by the app)
+    evaluate.py         Test profiles; counts the rules a raw draft breaks
+    learn.py            Test, propose rules, re-test, keep only rules that help
 tests/                Unit tests with a mocked Groq client
 pyproject.toml        Dependencies (managed with uv); uv.lock pins exact versions
 ```
@@ -63,13 +70,18 @@ The backend never imports Streamlit, and the frontend never talks to Groq direct
 
 ## Prompt design
 
-The main work in this project is the prompt, defined in [backend/core/constants.py](backend/core/constants.py) (system prompt) and [backend/llm/prompts.py](backend/llm/prompts.py) (builders):
+The main work in this project is the prompt. All of it lives in one Markdown agent file,
+[agents/workout-trainer.md](agents/workout-trainer.md), so prompts can be read and edited
+without touching code. [backend/llm/prompts.py](backend/llm/prompts.py) fills its
+`{placeholders}` with the client's profile:
 
 - **Hard rules in the system prompt.** It lists numbered rules for days, equipment,
   limitations, experience, session length and scope. Each rule includes examples
   (for example, "bad knees" means no jumping, lunges or step-ups), so the model knows what
-  "respect the constraint" means in practice. Limitations apply to the warm-up and cool-down
-  too, and beginners get no advanced variations.
+  "respect the constraint" means in practice. Limitations apply to the warm-up, cool-down,
+  Notes column and Progression too, and beginners get no advanced variations. Every day needs
+  real strength, cardio or core work (no stretching-only days), and worked time splits
+  ("15 min = 3 min warm-up + 10 min of sets + 2 min cool-down") show how to fill a session.
 - **Labelled profile in the user prompt.** Inputs are passed as a labelled list instead of
   being joined into one sentence, and the day count appears twice ("produce exactly N `## Day`
   sections").
@@ -79,11 +91,12 @@ The main work in this project is the prompt, defined in [backend/core/constants.
 - **Fixed output format.** The prompt specifies a Markdown template: an overview, a suggested
   weekly schedule, then for each day a warm-up, an exercise table
   (Exercise / Sets / Reps / Rest / Notes) and a cool-down, followed by progression and
-  safety notes.
+  safety notes. Circuits are written as normal rows (Sets = rounds), never header rows.
 - **Scope.** The prompt forbids diagnoses, claims that exercises treat injuries, and nutrition
   or supplement advice. It requires a disclaimer whenever the user lists an injury.
 - **Prompt-injection guard.** The free-text field is wrapped in `<client_notes>` tags, and the
-  model is told to treat it as data, never as instructions.
+  model is told to treat it as data, never as instructions. Any `<client_notes>` tags typed
+  into the field itself are stripped, so the text can't close its own block early.
 - **Self-check step.** The prompt asks the model to check every exercise against the
   equipment and limitations before it writes the plan.
 
@@ -96,13 +109,28 @@ The app doesn't rely on the model alone to follow the rules:
   the user sees a friendly error.
 - **Limitation guard:** for the most common limitations (knees, wrists, overhead/shoulder,
   lower back) a plan or swap naming a clearly banned exercise, such as a shoulder press for
-  "no overhead pressing", is rejected and retried. Notes in parentheses ("lateral raise
+  "no overhead pressing", is rejected and retried. Spaced, hyphenated and plural spellings
+  ("Box Step Up", "Split-Squats", "Sit Ups") count. Notes in parentheses ("lateral raise
   (no load overhead)") are ignored, so they don't cause false rejections. Other limitations
   rely on the prompt.
+- **Warm-up, cool-down and Notes repair:** a warm-up or cool-down line that names a banned
+  movement ("10 walking lunges" for bad knees) is replaced by a fixed safe line with the same
+  minutes, and the plan says which days changed. A Notes cell suggesting a banned variation
+  ("harder: jump squat") is emptied; the exercise stays. A banned movement in a circuit header
+  row can't be repaired, so that draft is retried.
+- **Equipment check:** an exercise that needs equipment the user didn't select (a barbell,
+  cable, band, bench, pull-up bar, machine, or dumbbells for "No equipment") is dropped with a
+  note ("Removed Barbell Back Squat because it needs equipment you didn't select"). A chair,
+  the floor or the stairs can stand in for a bench ("Bench Dip (use a chair)" is kept).
+- **Real training days:** a day whose table has no real exercise (a rest day, prose only, or
+  stretches and breathing only) is rejected and retried with the day named. A light day with
+  one real exercise, such as a 30-minute easy walk, is fine.
 - **Repair before retry:** if only a few exercises break a limitation and every day still has
   at least 3 left, those rows are dropped and the plan says so ("**Note:** Removed Seated
   Dumbbell Shoulder Press because it conflicts with your limitations"). That costs no extra
-  API call. Only if a day would be left too thin is the model asked again.
+  API call. Only if a day would be left too thin is the model asked again. Limitation and
+  equipment conflicts are dropped together, and the training-day check runs after the drops,
+  so a drop can't leave a stretch-only day behind.
 - **Corrective retries:** when a draft is rejected for breaking a rule, the retry tells the
   model what was wrong and names the whole category to avoid ("leave out ANY movement with the
   arms raised overhead ..."), instead of resending the same request and getting the same
@@ -112,9 +140,48 @@ The app doesn't rely on the model alone to follow the rules:
   So `timing.py` estimates each day itself (about 3 s per rep or the stated time, plus rest,
   warm-up and cool-down), trims sets and then trailing exercises from days that run over
   (never below 3 exercises), and writes the real estimate on each day's "Session time" line.
+  It reads distances ("400 m", at a running or walking pace), "1:30", tempo notes and "per
+  arm", and counts circuit rounds ("repeat 4x"). A day with rows it can't time ("AMRAP") says
+  "at least X min". A day that is still over after trimming (a 10-minute warm-up in a
+  15-minute session) gets a note saying so, instead of a claim that it was shortened to fit.
+- **Swap checks:** a replacement gets the same checks as the plan (limitation, equipment, no
+  stretches, Notes cell), and the session times are recomputed for the plan's session length.
 - **Table repair:** garbled table separator rows (e.g. `|---s|`) are rewritten so tables render.
 - **Disclaimer:** if the user listed a limitation and the model left out the disclaimer, the
   app adds it.
+
+## Self-improvement loop
+
+The agent learns new prompt rules from its own mistakes:
+
+```bash
+uv run python -m backend.learning.learn --dry-run   # report only
+uv run python -m backend.learning.learn --samples 2 # learn; more samples = less noise
+```
+
+1. **Test.** Draft a plan for six fixed test clients (every goal and level, 15–60 min
+   sessions, the guarded limitations) and count the mistakes in the *raw* drafts: wrong day
+   count, a banned exercise for the limitation, stretches in the exercise table, days over or
+   well under the session length, a missing disclaimer.
+2. **Reflect.** Show the model those mistakes and its current lessons, and ask for at most 2
+   new one-line rules.
+3. **Re-test and keep only what helps.** Draft the same clients again with the new rules. Only
+   if there are fewer mistakes are the rules appended to the agent file's `learned-rules`
+   section, with the date and before/after counts. Otherwise they are thrown away.
+
+The app reads the learned rules into its system prompt on start-up. Some limits are deliberate:
+
+- **Offline, not in the app.** The hosted app's disk is reset on every deploy, and learning from
+  users' free text would let anyone write rules into the prompt. Learned rules reach users only
+  when the agent file is committed, so every change goes through a reviewable git diff.
+- **Bounded.** At most 12 learned rules and 300 characters each, deduplicated, one line each.
+  When full, the loop stops until the rules are merged or pruned by hand.
+- **Token cost.** One round makes about 13 calls, roughly 50,000 tokens: a quarter of the free
+  tier's 200,000 tokens a day. A short per-minute limit is waited out. If Groq says the daily
+  cap is used up, the round stops without writing anything, so a failed draft can't count as a
+  mistake.
+- **Code checks stay.** Learned rules make the model's first draft better. The code-level
+  checks below still repair whatever slips through.
 
 ## Prompt iteration against the live model
 
