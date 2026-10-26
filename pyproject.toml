@@ -1,0 +1,44 @@
+[project]
+name = "workout-plan-generator"
+version = "0.1.0"
+description = "Streamlit app that generates personalised weekly workout plans with Groq"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "groq>=1.7.0",
+    "python-dotenv>=1.2.4",
+    "streamlit>=1.65.0",
+    "watchdog>=6.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RET", "ANN", "PL", "RUF"]
+ignore = ["PLR2004"]  # magic-number comparisons are fine in validation and tests
+
+[tool.ruff.lint.pylint]
+max-args = 8  # generate_workout_plan mirrors the assignment's input list
+max-positional-args = 8
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN", "PLR0913", "SIM117"]
+"frontend/app.py" = ["E402"]  # sys.path is adjusted before the backend imports
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
