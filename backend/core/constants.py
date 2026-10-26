@@ -23,8 +23,10 @@ exactly as written, so every exercise must be specific and actionable.
 3. LIMITATIONS: Treat every injury or limitation as a strict constraint. Do not program
    movements that load or aggravate the affected area, and pick a safe alternative instead.
    This applies to EVERY part of the session, including the warm-up and cool-down.
-   Example: "bad knees" -> no jumping, lunges, step-ups or pistol squats; "no overhead pressing"
-   -> no overhead press, push press, handstand work or snatch-style moves.
+   Examples: "bad knees" -> no jumping, lunges, step-ups or pistol squats;
+   "no overhead pressing" -> nothing loaded with the arms overhead (overhead press, push press,
+   overhead triceps extensions, handstands, snatches); "sore wrist" -> no weight on the hands
+   (push-ups, mountain climbers, hand planks), forearm variations are fine.
 4. EXPERIENCE: Match exercise complexity, volume and intensity to the experience level.
    Beginners get simple, stable movements and fewer sets, and no advanced variations
    (e.g. diamond or plank-to-push-ups, pistol squats, plyometrics); advanced users can
@@ -110,7 +112,7 @@ MAX_LIMITATIONS_CHARS = 300
 MAX_SWAP_REASON_CHARS = 300
 SWAP_ROW_CELLS = 5  # Exercise | Sets | Reps / Time | Rest | Notes
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = "openai/gpt-oss-20b"
 TEMPERATURE = 0.7  # some variety so "Regenerate" gives a different plan
 
 # Reasoning models think before answering, and those hidden tokens count against max_tokens.
@@ -150,5 +152,35 @@ FALLBACK_DISCLAIMER = (
 )
 
 DAY_HEADING_PATTERN = re.compile(r"^##\s*Day\s+(\d+)\b", re.IGNORECASE | re.MULTILINE)
+# Code-level backstop for the most common limitations. The prompt already forbids these, but
+# live tests showed the model slipping about 1 time in 4 (e.g. a shoulder press for "no overhead
+# pressing"), so a plan naming one of these exercises is rejected and retried.
+# Each rule: (pattern on the user's limitation text, banned exercise names, names still allowed).
+LIMITATION_GUARDS: tuple[tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str] | None], ...] = (
+    (
+        re.compile(r"\bknee", re.IGNORECASE),
+        re.compile(r"jump|lunge|step-?up|pistol|plyo|burpee|skater|split squat", re.IGNORECASE),
+        None,
+    ),
+    (
+        re.compile(r"overhead|shoulder", re.IGNORECASE),
+        re.compile(
+            r"overhead|shoulder press|military press|push press|arnold|handstand|snatch|jerk|pike",
+            re.IGNORECASE,
+        ),
+        None,
+    ),
+    (
+        re.compile(r"wrist", re.IGNORECASE),
+        re.compile(r"push-?up|mountain climber|burpee|handstand|plank|bear crawl|\bdips?\b", re.IGNORECASE),
+        re.compile(r"forearm", re.IGNORECASE),
+    ),
+    (
+        re.compile(r"lower back|back pain", re.IGNORECASE),
+        re.compile(r"deadlift|good ?morning|sit-?up|russian twist|superman|v-?up|jackknife", re.IGNORECASE),
+        None,
+    ),
+)
+
 # A separator row: every cell starts with at least three dashes, possibly followed by junk.
 TABLE_SEPARATOR_PATTERN = re.compile(r"^\s*\|(?:\s*:?-{3,}[^|]*\|)+\s*$")

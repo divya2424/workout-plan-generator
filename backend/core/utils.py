@@ -19,6 +19,7 @@ from backend.core.constants import (
     EXPERIENCE_LEVELS,
     FALLBACK_DISCLAIMER,
     GOALS,
+    LIMITATION_GUARDS,
     MAX_DAYS,
     MAX_LIMITATIONS_CHARS,
     MAX_SESSION_MINUTES,
@@ -70,11 +71,12 @@ def describe_equipment(equipment: Collection[str]) -> list[str]:
     return ["Bodyweight only (no weights, no bench, no pull-up bar, no machines)"]
 
 
-def check_plan(plan: str, days_per_week: int, has_limitations: bool) -> str:
+def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
     """Validate the model's output and return a cleaned-up plan.
 
-    Raises a retryable error if the response is empty or doesn't contain exactly the
-    requested training days. Appends the disclaimer if the model forgot it.
+    Raises a retryable error if the response is empty, doesn't contain exactly the requested
+    training days, or names an exercise that clearly conflicts with the user's limitations.
+    Appends the disclaimer if the model forgot it.
     """
     plan = plan.strip()
     if not plan:
@@ -87,8 +89,15 @@ def check_plan(plan: str, days_per_week: int, has_limitations: bool) -> str:
             f"{days_per_week}. Please click Generate again."
         )
 
+    conflicts = find_limitation_conflicts(list_exercises(plan), limitations)
+    if conflicts:
+        raise RetryableError(
+            f"The AI included an exercise that conflicts with your limitations ({conflicts[0]}). "
+            "Please try again."
+        )
+
     plan = _fix_table_separators(plan)
-    if has_limitations and f"{DISCLAIMER_MARKER}:" not in plan:
+    if limitations and f"{DISCLAIMER_MARKER}:" not in plan:
         plan = f"{plan}\n\n{FALLBACK_DISCLAIMER}"
     return plan
 
@@ -138,7 +147,22 @@ def list_exercises(plan: str) -> list[str]:
     return list(dict.fromkeys(name for name in names if name))
 
 
-def parse_swap_row(raw: str, old_name: str, existing: list[str]) -> str:
+def find_limitation_conflicts(exercise_names: list[str], limitations: str) -> list[str]:
+    """Exercise names that clearly clash with a common limitation (see LIMITATION_GUARDS)."""
+    if not limitations:
+        return []
+    conflicts: list[str] = []
+    for trigger, banned, allowed in LIMITATION_GUARDS:
+        if not trigger.search(limitations):
+            continue
+        for name in exercise_names:
+            plain = name.replace("\u2011", "-").replace("\u2010", "-")
+            if banned.search(plain) and not (allowed and allowed.search(plain)) and name not in conflicts:
+                conflicts.append(name)
+    return conflicts
+
+
+def parse_swap_row(raw: str, old_name: str, existing: list[str], limitations: str = "") -> str:
     """Extract and validate the single replacement table row from the model's reply."""
     taken = {name.lower() for name in [*existing, old_name]}
     for line in raw.splitlines():
@@ -149,6 +173,10 @@ def parse_swap_row(raw: str, old_name: str, existing: list[str]) -> str:
         if name.lower() in taken:
             raise RetryableError(
                 "The AI suggested an exercise that is already in your plan. Please try again."
+            )
+        if find_limitation_conflicts([name], limitations):
+            raise RetryableError(
+                f"The AI suggested '{name}', which conflicts with your limitations. Please try again."
             )
         return "| " + " | ".join(cells) + " |"
     raise RetryableError("The AI didn't return a usable replacement exercise. Please try again.")

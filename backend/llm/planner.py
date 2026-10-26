@@ -74,9 +74,7 @@ def generate_workout_plan(
             api_key=key,
             model=model_name,
             max_tokens=min(MAX_TOKENS_CAP, BASE_MAX_TOKENS + TOKENS_PER_DAY * request.days_per_week),
-            parse=lambda raw: check_plan(
-                raw, request.days_per_week, has_limitations=bool(request.limitations)
-            ),
+            parse=lambda raw: check_plan(raw, request.days_per_week, request.limitations),
         )
     except PlanGenerationError:
         raise
@@ -128,7 +126,7 @@ def swap_exercise(
             api_key=key,
             model=model_name,
             max_tokens=SWAP_MAX_TOKENS,
-            parse=lambda raw: parse_swap_row(raw, exercise, existing),
+            parse=lambda raw: parse_swap_row(raw, exercise, existing, request.limitations),
         )
         for i in rows:
             lines[i] = new_row

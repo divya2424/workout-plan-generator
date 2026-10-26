@@ -20,6 +20,7 @@ from backend.core.errors import PlanGenerationError
 from backend.core.utils import (
     check_plan,
     describe_equipment,
+    find_limitation_conflicts,
     list_exercises,
     resolve_credentials,
     validate_inputs,
@@ -95,7 +96,7 @@ def test_user_prompt_contains_every_input() -> None:
 
 
 def test_check_plan_accepts_correct_day_count() -> None:
-    assert check_plan(GOOD_PLAN, 2, has_limitations=False) == GOOD_PLAN.strip()
+    assert check_plan(GOOD_PLAN, 2, limitations="") == GOOD_PLAN.strip()
 
 
 MALFORMED_PLANS = ["", "   ", "Just do some squats.", GOOD_PLAN.replace("## Day 2", "## Day 3")]
@@ -104,18 +105,18 @@ MALFORMED_PLANS = ["", "   ", "Just do some squats.", GOOD_PLAN.replace("## Day 
 @pytest.mark.parametrize("bad", MALFORMED_PLANS)
 def test_check_plan_rejects_empty_or_malformed(bad: str) -> None:
     with pytest.raises(PlanGenerationError):
-        check_plan(bad, 2, has_limitations=False)
+        check_plan(bad, 2, limitations="")
 
 
 def test_check_plan_rejects_wrong_day_count() -> None:
     with pytest.raises(PlanGenerationError, match="2 training day"):
-        check_plan(GOOD_PLAN, 3, has_limitations=False)
+        check_plan(GOOD_PLAN, 3, limitations="")
 
 
 def test_disclaimer_added_when_injury_given_and_model_forgot() -> None:
-    result = check_plan(GOOD_PLAN, 2, has_limitations=True)
+    result = check_plan(GOOD_PLAN, 2, limitations="bad knees")
     assert result.endswith(FALLBACK_DISCLAIMER)
-    assert "Disclaimer" not in check_plan(GOOD_PLAN, 2, has_limitations=False)
+    assert "Disclaimer" not in check_plan(GOOD_PLAN, 2, limitations="")
 
 
 # --- API call -----------------------------------------------------------------
@@ -342,17 +343,54 @@ def test_plan_request_normalises_and_compares_by_value() -> None:
 
 def test_check_plan_repairs_garbled_table_separators() -> None:
     garbled = GOOD_PLAN.replace("|---|---|---|---|---|", "|---|---s|---|---|---|", 1)
-    fixed = check_plan(garbled, 2, has_limitations=False)
+    fixed = check_plan(garbled, 2, limitations="")
     assert "---s" not in fixed
     assert fixed.count("|---|---|---|---|---|") == 2
 
 
 @pytest.mark.parametrize(
     ("model", "expected"),
-    [("openai/gpt-oss-20b", "low"), ("llama-3.3-70b-versatile", groq.omit)],
+    [("openai/gpt-oss-20b", "low"), ("qwen/qwen3.8-27b", groq.omit)],
 )
 def test_reasoning_effort_is_only_sent_to_reasoning_models(model: str, expected: object) -> None:
     client = mock_client(fake_response(GOOD_PLAN))
     with patch.object(groq_client, "Groq", return_value=client):
         generate_workout_plan(**VALID, api_key="k", model=model)
     assert client.chat.completions.create.call_args.kwargs["reasoning_effort"] == expected
+
+
+# --- limitation guard -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("limitations", "exercise", "conflict"),
+    [
+        ("no overhead pressing", "Seated Dumbbell Shoulder Press (light)", True),  # seen live
+        ("no overhead pressing", "Overhead Triceps Extension (rope)", True),  # seen live
+        ("bad knees", "Step\N{NON-BREAKING HYPHEN}Up (low step)", True),  # seen live, non-breaking hyphen
+        ("sore wrist", "Mountain Climbers", True),  # seen live
+        ("sore wrist", "Side Plank (forearm)", False),  # forearm variations are fine
+        ("lower back pain", "Seated side crunch", False),  # low-load, a judgment call
+        ("asthma", "Burpee", False),  # no rule for this limitation: left to the prompt
+        ("", "Burpee", False),
+    ],
+)
+def test_limitation_guard(limitations: str, exercise: str, conflict: bool) -> None:
+    assert bool(find_limitation_conflicts([exercise], limitations)) is conflict
+
+
+def test_plan_breaking_a_limitation_is_rejected_then_retried() -> None:
+    bad = GOOD_PLAN.replace("Goblet Squat", "Jump Squat")
+    client = mock_client(fake_response(bad), fake_response(GOOD_PLAN))
+    with patch.object(groq_client, "Groq", return_value=client):
+        plan = generate_workout_plan(**{**VALID, "limitations": "bad knees"}, api_key="k")
+    assert "Jump Squat" not in plan
+    assert client.chat.completions.create.call_count == 2
+
+
+def test_swap_rejects_a_replacement_that_breaks_a_limitation() -> None:
+    knee_request = make_request(limitations="bad knees")
+    replies = [fake_response("| Walking Lunge | 3 | 10 | 60s | x |")] * MAX_ATTEMPTS
+    with patch.object(groq_client, "Groq", return_value=mock_client(*replies)):
+        with pytest.raises(PlanGenerationError, match="conflicts with your limitations"):
+            planner.swap_exercise(GOOD_PLAN, "Push-up", "", knee_request, api_key="k")
