@@ -21,7 +21,7 @@ uv run streamlit run frontend/app.py
 Requires [uv](https://docs.astral.sh/uv/getting-started/installation/). Run the tests (no API key needed, Groq is mocked) and the quality checks:
 
 ```bash
-uv run pytest                      # unit and concurrency tests
+uv run pytest                      # unit tests, Groq mocked
 uv run ruff check . && uv run ruff format --check .
 uv run mypy backend frontend       # strict type checking
 ```
@@ -44,18 +44,16 @@ frontend/
   app.py              Streamlit UI only: widgets, session state, rendering
 backend/
   core/               Shared building blocks (no network access)
-    constants.py        Input options, limits, model/timeout/rate-limit settings, system prompts
+    constants.py        Input options, limits, model and timeout settings, system prompts
     errors.py           PlanGenerationError, RetryableError, RateLimitExceeded
     models.py           PlanRequest: the client's profile as one immutable, comparable value
     utils.py            Input validation, equipment text, response checks, table parsing, credentials
   llm/                Everything about talking to the model
     planner.py          Public operations: generate_workout_plan() and swap_exercise()
     prompts.py          User-prompt builders
-    retry.py            Retry policy and the wall-clock time budget
+    retry.py            One retry for transient or malformed answers, with a corrective hint
     client.py           Shared Groq client, one chat completion
     error_mapping.py    Groq exceptions -> friendly errors (retryable or not)
-  limits/             Protecting the app and the API quota
-    rate_limiter.py     Thread-safe cooldown, per-session and global request caps
 tests/                Unit tests with a mocked Groq client
 pyproject.toml        Dependencies (managed with uv); uv.lock pins exact versions
 ```
@@ -141,34 +139,26 @@ the requested length, and limitations outside the guarded ones depend on the pro
 | Invalid key / rate limit / unknown model / other 4xx | A matching friendly message. These are **not** retried. |
 | Timeout / network error / 5xx | One retry, then a friendly message |
 | Empty, malformed, wrong-day-count or **truncated** (`finish_reason=length`) response | One retry, then a friendly fallback message |
-| Too many requests from one session, or the app-wide cap reached | A "please wait" / "try again later" warning |
 | Any unexpected exception | A generic "something went wrong" message. The app never crashes. |
 
-## Reliability, scaling and concurrency
+## Reliability
 
-- **Retry policy and time budget.** The SDK's own retries are off. `complete_with_retries()` retries only
-  transient or malformed results (at most 2 attempts) inside a 90 s wall-clock budget, with a
-  5 s connect and 40 s read timeout. Responses are not streamed, so the read timeout has to
-  cover the whole generation.
+- **Retry policy.** The SDK's own retries are off. `complete_with_retries()` retries a
+  transient or malformed result once (at most 2 attempts), with a 5 s connect and 40 s read
+  timeout. Responses are not streamed, so the read timeout has to cover the whole generation.
 - **Output budget sized from live tests.** `max_tokens` grows with the number of days (1,500 +
   400 per day, at most 4,500), and a cut-off answer is detected and retried instead of being
   shown as a complete plan. gpt-oss models are sent `reasoning_effort="low"` so their hidden
   reasoning doesn't use up the budget.
-- **One shared Groq client.** It is thread-safe and keeps its connections open, so requests
-  skip the TLS handshake.
-- **Rate limiting.** `RateLimiter` enforces a 5 s cooldown per session, 15 requests per hour
-  per session and 1000 per day for the whole app. All checks happen under one lock, so
-  concurrent requests cannot slip past a limit. Invalid inputs don't use quota.
+- **One shared Groq client** keeps its connections open, so requests skip the TLS handshake.
 - **Cheap swaps.** A swap asks the model for one table row (800 output tokens at most, most of
   it room for reasoning) and patches it into the plan, instead of regenerating the whole plan.
 - **Logging.** Each call logs model, latency, finish reason, token count and failure type
   (never user text) through the standard `logging` module.
 - **Groq free tier.** The free tier allows 8,000 tokens per minute and Groq reserves
   `prompt + max_tokens` up front, so roughly two plans fit in a minute. Extra requests get the
-  friendly "rate limit reached" message (verified live).
-- **Known limits.** State (the rate limits) is per process; running several server
-  processes means each enforces its own limits. A new browser tab is a new session, so the
-  global cap, not the per-session limit, is the real protection against abuse.
+  friendly "rate limit reached" message (verified live). The app adds no rate limiting of its
+  own: Groq already caps usage, and a free key has no bill to protect.
 
 ## Stretch goals implemented
 

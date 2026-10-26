@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import time
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import groq
 import httpx
@@ -14,7 +12,6 @@ from backend.core.constants import (
     MAX_ATTEMPTS,
     READ_TIMEOUT_SECONDS,
     SWAP_MAX_TOKENS,
-    TOTAL_BUDGET_SECONDS,
 )
 from backend.core.errors import PlanGenerationError
 from backend.core.utils import (
@@ -26,7 +23,7 @@ from backend.core.utils import (
     validate_inputs,
 )
 from backend.llm import client as groq_client
-from backend.llm import planner, retry
+from backend.llm import planner
 from backend.llm.planner import generate_workout_plan
 from backend.llm.prompts import build_user_prompt
 from tests.helpers import GOOD_PLAN, RICH_PLAN, VALID, fake_response, make_request, mock_client, status_error
@@ -72,9 +69,9 @@ def test_missing_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_equipment_is_made_explicit() -> None:
-    assert "Bodyweight only" in describe_equipment(["No equipment"])[0]
-    assert "dumbbells" in describe_equipment(["No equipment", "Home dumbbells"])[0]
-    assert "Full commercial gym" in describe_equipment(["Home dumbbells", "Full gym"])[0]
+    assert "Bodyweight only" in describe_equipment(["No equipment"])
+    assert "dumbbells" in describe_equipment(["No equipment", "Home dumbbells"])
+    assert "Full commercial gym" in describe_equipment(["Home dumbbells", "Full gym"])
 
 
 def test_user_prompt_contains_every_input() -> None:
@@ -213,32 +210,6 @@ def test_output_budget_scales_with_days_and_timeouts_are_set() -> None:
     two_days, seven_days = (c.kwargs for c in client.chat.completions.create.call_args_list)
     assert seven_days["max_tokens"] > two_days["max_tokens"]
     assert two_days["timeout"].read <= READ_TIMEOUT_SECONDS
-
-
-def test_retry_stops_when_time_budget_is_spent(monkeypatch: pytest.MonkeyPatch) -> None:
-    now = [0.0]
-    monkeypatch.setattr(retry, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=lambda _s: None))
-
-    def slow_failure(**_kwargs: object) -> None:
-        now[0] += TOTAL_BUDGET_SECONDS + 1  # the first attempt eats the whole budget
-        raise CONNECTION_ERROR
-
-    client = MagicMock()
-    client.chat.completions.create.side_effect = slow_failure
-    with patch.object(groq_client, "Groq", return_value=client):
-        with pytest.raises(PlanGenerationError, match="internet"):
-            generate_workout_plan(**VALID, api_key="k")
-    assert client.chat.completions.create.call_count == 1
-
-
-def test_retry_waits_the_configured_backoff_between_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
-    slept: list[float] = []
-    monkeypatch.setattr(retry, "RETRY_BACKOFF_SECONDS", 2.0)
-    monkeypatch.setattr(retry, "time", SimpleNamespace(monotonic=time.monotonic, sleep=slept.append))
-    client = mock_client(CONNECTION_ERROR, fake_response(GOOD_PLAN))
-    with patch.object(groq_client, "Groq", return_value=client):
-        generate_workout_plan(**VALID, api_key="k")
-    assert slept == [2.0]  # one wait, between attempt 1 and 2, and none after success
 
 
 def test_client_is_created_once_and_reused() -> None:

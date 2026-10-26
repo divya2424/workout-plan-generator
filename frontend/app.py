@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import uuid
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import date
@@ -33,7 +32,6 @@ from backend.core.constants import (
 from backend.core.errors import PlanGenerationError
 from backend.core.models import PlanRequest
 from backend.core.utils import list_exercises, validate_inputs
-from backend.limits.rate_limiter import rate_limiter
 from backend.llm.planner import generate_workout_plan, swap_exercise
 
 load_dotenv()
@@ -85,22 +83,12 @@ def collect_inputs() -> PlanRequest:
     )
 
 
-def client_id() -> str:
-    """A stable per-browser-session id used for rate limiting."""
-    return str(st.session_state.setdefault("client_id", uuid.uuid4().hex))
-
-
-def run_guarded(spinner_text: str, action: Callable[[], None]) -> bool:
-    """Run `action` under the rate limiter with a spinner; show friendly errors. True on success.
+def run_with_spinner(spinner_text: str, action: Callable[[], None]) -> bool:
+    """Run `action` with a spinner and show any friendly error. True on success.
 
     `action` must store its result in session state itself. It runs inside the spinner so
     the result is saved even if Streamlit interrupts the script when the spinner closes.
     """
-    try:
-        rate_limiter.acquire(client_id())
-    except PlanGenerationError as exc:  # RateLimitExceeded
-        st.warning(str(exc))
-        return False
     with st.spinner(spinner_text):
         try:
             action()
@@ -122,7 +110,7 @@ def run_generation(request: PlanRequest) -> bool:
         st.session_state.plan = generate_workout_plan(**asdict(request), api_key=get_api_key())
         st.session_state.plan_inputs = request
 
-    return run_guarded("Building your plan...", action)
+    return run_with_spinner("Building your plan...", action)
 
 
 def render_swap(plan: str, request: PlanRequest) -> None:
@@ -139,7 +127,7 @@ def render_swap(plan: str, request: PlanRequest) -> None:
             def action() -> None:
                 st.session_state.plan = swap_exercise(plan, target, reason, request, api_key=get_api_key())
 
-            if run_guarded(f"Finding an alternative to {target}...", action):
+            if run_with_spinner(f"Finding an alternative to {target}...", action):
                 st.rerun()
 
 

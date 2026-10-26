@@ -17,7 +17,3 @@ class RetryableError(PlanGenerationError):
     def __init__(self, message: str, model_hint: str | None = None) -> None:
         super().__init__(message)
         self.model_hint = model_hint
-
-
-class RateLimitExceeded(PlanGenerationError):
-    """The caller (or the whole app) has used up its request allowance."""

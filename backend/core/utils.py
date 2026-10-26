@@ -62,19 +62,19 @@ def validate_inputs(request: PlanRequest) -> list[str]:
     return problems
 
 
-def describe_equipment(equipment: Collection[str]) -> list[str]:
-    """Expand the equipment choices into an explicit list the model can't misread."""
+def describe_equipment(equipment: Collection[str]) -> str:
+    """Spell out the equipment choices so the model can't assume anything extra."""
     if EQUIPMENT_GYM in equipment:
-        return [
+        return (
             "Full commercial gym (barbells, dumbbells, benches, racks, cable stations, "
             "machines, pull-up bar, cardio machines)"
-        ]
+        )
     if EQUIPMENT_DUMBBELLS in equipment:
-        return [
-            "A pair of adjustable dumbbells",
-            "Bodyweight only otherwise (no bench, no pull-up bar, no barbell, no machines)",
-        ]
-    return ["Bodyweight only (no weights, no bench, no pull-up bar, no machines)"]
+        return (
+            "A pair of adjustable dumbbells, bodyweight only otherwise "
+            "(no bench, no pull-up bar, no barbell, no machines)"
+        )
+    return "Bodyweight only (no weights, no bench, no pull-up bar, no machines)"
 
 
 def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
@@ -97,18 +97,20 @@ def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
             model_hint=f'It had {len(day_numbers)} "## Day" sections; exactly {days_per_week} are required.',
         )
 
-    conflicts = find_limitation_conflicts(list_exercises(plan), limitations)
-    repaired = _drop_exercises(plan, conflicts) if conflicts else None
-    if repaired is not None:
+    broken = _broken_guards(list_exercises(plan), limitations)
+    if broken:
+        conflicts = _conflict_names(broken)
+        repaired = _drop_exercises(plan, conflicts)
+        if repaired is None:
+            raise RetryableError(
+                f"The AI included an exercise that conflicts with your limitations ({conflicts[0]}). "
+                "Please try again.",
+                model_hint=_limitation_hint(broken),
+            )
         logger.info("repaired plan by dropping %d conflicting exercise(s)", len(conflicts))
-        removed = ", ".join(conflicts)
         clash = "it conflicts" if len(conflicts) == 1 else "they conflict"
-        plan = f"{repaired}\n\n**Note:** Removed {removed} because {clash} with your limitations."
-    elif conflicts:
-        raise RetryableError(
-            f"The AI included an exercise that conflicts with your limitations ({conflicts[0]}). "
-            "Please try again.",
-            model_hint=_limitation_hint(list_exercises(plan), limitations),
+        plan = (
+            f"{repaired}\n\n**Note:** Removed {', '.join(conflicts)} because {clash} with your limitations."
         )
 
     plan = _fix_table_separators(plan)
@@ -207,17 +209,18 @@ def _broken_guards(exercise_names: list[str], limitations: str) -> list[tuple[Li
     return broken
 
 
+def _conflict_names(broken: list[tuple[LimitationGuard, list[str]]]) -> list[str]:
+    return list(dict.fromkeys(name for _, hits in broken for name in hits))
+
+
 def find_limitation_conflicts(exercise_names: list[str], limitations: str) -> list[str]:
     """Exercise names that clearly clash with a common limitation (see LIMITATION_GUARDS)."""
-    return list(
-        dict.fromkeys(name for _, hits in _broken_guards(exercise_names, limitations) for name in hits)
-    )
+    return _conflict_names(_broken_guards(exercise_names, limitations))
 
 
-def _limitation_hint(exercise_names: list[str], limitations: str) -> str:
+def _limitation_hint(broken: list[tuple[LimitationGuard, list[str]]]) -> str:
     """Tell the model which movements broke the rules and the whole category to avoid."""
-    broken = _broken_guards(exercise_names, limitations)
-    names = ", ".join(repr(name) for _, hits in broken for name in hits)
+    names = ", ".join(repr(name) for name in _conflict_names(broken))
     categories = "; ".join(guard.description for guard, _ in broken)
     return f"It included {names}, which conflicts with the client's limitations. Leave out {categories}."
 
@@ -235,10 +238,10 @@ def parse_swap_row(raw: str, old_name: str, existing: list[str], limitations: st
                 "The AI suggested an exercise that is already in your plan. Please try again.",
                 model_hint=f"'{name}' is already in the plan. Choose a different exercise.",
             )
-        if find_limitation_conflicts([name], limitations):
+        if broken := _broken_guards([name], limitations):
             raise RetryableError(
                 f"The AI suggested '{name}', which conflicts with your limitations. Please try again.",
-                model_hint=_limitation_hint([name], limitations),
+                model_hint=_limitation_hint(broken),
             )
         return "| " + " | ".join(cells) + " |"
     raise RetryableError("The AI didn't return a usable replacement exercise. Please try again.")

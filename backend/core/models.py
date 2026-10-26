@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 
 from backend.core.constants import DEFAULT_SESSION_MINUTES
@@ -26,15 +25,3 @@ class PlanRequest:
     def __post_init__(self) -> None:
         object.__setattr__(self, "equipment", tuple(self.equipment))
         object.__setattr__(self, "limitations", self.limitations.strip())
-
-    @classmethod
-    def from_parts(
-        cls,
-        goal: str,
-        experience: str,
-        days_per_week: int,
-        equipment: Iterable[str],
-        session_minutes: int = DEFAULT_SESSION_MINUTES,
-        limitations: str = "",
-    ) -> PlanRequest:
-        return cls(goal, experience, days_per_week, tuple(equipment), session_minutes, limitations)

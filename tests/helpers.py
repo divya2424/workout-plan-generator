@@ -47,7 +47,7 @@ A simple full-body split.
 
 def fake_response(content: str | None, finish_reason: str = "stop") -> SimpleNamespace:
     choice = SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice])
+    return SimpleNamespace(choices=[choice], usage=None)
 
 
 def mock_client(*responses: object) -> MagicMock:

@@ -137,16 +137,7 @@ SWAP_MAX_TOKENS = 800  # one table row, plus room for hidden reasoning
 # Responses are not streamed, so the read timeout must cover the whole generation.
 CONNECT_TIMEOUT_SECONDS = 5.0
 READ_TIMEOUT_SECONDS = 40.0
-TOTAL_BUDGET_SECONDS = 90.0  # wall-clock limit across all attempts of one request
 MAX_ATTEMPTS = 2
-RETRY_BACKOFF_SECONDS = 1.0
-
-# --- Rate limiting (in-memory, per process) --------------------------------------------
-COOLDOWN_SECONDS = 5.0  # minimum gap between two requests from one session
-CLIENT_MAX_REQUESTS = 15
-CLIENT_WINDOW_SECONDS = 3600.0
-GLOBAL_MAX_REQUESTS = 1000
-GLOBAL_WINDOW_SECONDS = 86400.0
 
 FALLBACK_DISCLAIMER = (
     f"**{DISCLAIMER_MARKER}:** This plan is general fitness guidance, not medical advice. "
@@ -159,8 +150,7 @@ DAY_HEADING_PATTERN = re.compile(r"^##\s*Day\s+(\d+)\b", re.IGNORECASE | re.MULT
 
 # Code-level backstop for the most common limitations. The prompt already forbids these, but
 # live tests showed the model slipping about 1 time in 4 (e.g. a shoulder press for "no overhead
-# pressing"), so a plan naming one of these exercises is rejected and retried.
-# Each rule: (pattern on the user's limitation text, banned exercise names, names still allowed).
+# pressing"), so check_plan drops such exercises, or asks again if a day would be left too thin.
 class LimitationGuard(NamedTuple):
     trigger: re.Pattern[str]  # matched against the user's limitation text
     banned: re.Pattern[str]  # exercise names that clash with it

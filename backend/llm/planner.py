@@ -57,9 +57,7 @@ def generate_workout_plan(
     Never raises anything but PlanGenerationError, whose message is safe to show to the user.
     """
     try:
-        request = PlanRequest.from_parts(
-            goal, experience, days_per_week, equipment, session_minutes, limitations
-        )
+        request = PlanRequest(goal, experience, days_per_week, tuple(equipment), session_minutes, limitations)
         problems = validate_inputs(request)
         if problems:
             raise PlanGenerationError(" ".join(problems))

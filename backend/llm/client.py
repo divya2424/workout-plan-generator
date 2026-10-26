@@ -78,15 +78,13 @@ def _extract_text(response: ChatCompletion, model: str, latency: float) -> str:
     except (AttributeError, IndexError, TypeError) as exc:
         raise RetryableError("The AI returned a response in an unexpected format.") from exc
 
-    finish_reason = getattr(choice, "finish_reason", None)
-    usage = getattr(response, "usage", None)
     logger.info(
         "llm_call ok model=%s latency=%.2fs finish=%s tokens=%s",
         model,
         latency,
-        finish_reason,
-        getattr(usage, "total_tokens", None),
+        choice.finish_reason,
+        response.usage.total_tokens if response.usage else None,
     )
-    if finish_reason == "length":
+    if choice.finish_reason == "length":
         raise RetryableError("The AI's answer was cut off before the plan was finished. Please try again.")
     return content or ""
