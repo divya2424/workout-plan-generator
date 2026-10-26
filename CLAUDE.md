@@ -28,7 +28,9 @@ frontend/app.py             Streamlit UI only
 backend/core/               no network: constants, models, errors, utils, timing
 backend/llm/                planner (public API), prompts + agent_file, retry, client, error_mapping
 backend/learning/           offline self-improvement loop (evaluate, learn)
-tests/                      pytest; fakes in tests/helpers.py
+tests/unit/                 unit tests for pure functions
+tests/qe/                   QE scenario tests (guards, equipment, timing, app, live)
+tests/                      shared fixtures: helpers.py, qe_plans.py, conftest.py
 .claude/agents/             product-manager, software-engineer, qe subagents
 ```
 

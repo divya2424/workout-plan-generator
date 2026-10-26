@@ -30,15 +30,18 @@ to spot when code or output is wrong for the user, not only when it fails a test
 2. **Simplest thing that works.** No new layers, base classes, config systems or
    dependencies unless the task needs them. Prefer a function over a class and deleting
    code over adding it. If you're unsure whether something is needed, it isn't.
-3. **Tests for every change**, in `tests/`:
-   - Unit tests for each pure function, including edge cases and the failure path.
-   - Integration tests that run a public operation end to end (`generate_workout_plan`,
+3. **Tests for every change**, organised by purpose:
+   - `tests/unit/` — unit tests for pure functions, including edge cases and the failure path.
+   - `tests/qe/` — QE scenario tests: limitation guards, equipment, timing, app UI, live.
+   - Shared fixtures live in `tests/helpers.py` and `tests/qe_plans.py` (root `tests/`).
+   - Integration tests run a public operation end to end (`generate_workout_plan`,
      `swap_exercise`, the Streamlit app via `streamlit.testing.v1.AppTest`) with Groq mocked
      through `tests/helpers.py` (`mock_client`, `fake_response`, `status_error`).
    - Live tests against real Groq go behind `@pytest.mark.live` and are skipped unless
      `GROQ_API_KEY` is set and `-m live` is passed. Keep them to a handful of calls.
    - Name tests after the behaviour ("a_day_that_fits_is_unchanged"), not the function.
-   - Check a test can fail: break the code briefly and confirm the test catches it.
+   - Only write tests for complex logic, negative scenarios, and edge cases. Skip trivial
+     positive-path matrices — a few representative cases beat an exhaustive grid.
 4. **Errors stay friendly.** Public operations raise only `PlanGenerationError` with a
    message safe to show the user; the app must never crash on any input.
 5. **Run the full gate before saying you're done** and report its real output:
