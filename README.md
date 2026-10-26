@@ -5,6 +5,7 @@ schedule, equipment, injuries) into a weekly workout plan you can follow, genera
 through the Groq API.
 
 **Live demo:** https://workout-plan-gen.streamlit.app/
+**Design document (HLD & LLD):** https://claude.ai/artifact/5WDpFsqSQ3o123LZ5f4sUT
 
 The demo runs on Groq's free tier (8,000 tokens per minute, roughly two plans a minute, and
 200,000 tokens a day). If
@@ -62,7 +63,12 @@ backend/
   learning/           The self-improvement loop (offline, never run by the app)
     evaluate.py         Test profiles; counts the rules a raw draft breaks
     learn.py            Test, propose rules, re-test, keep only rules that help
-tests/                Unit tests with a mocked Groq client
+tests/
+  unit/               Unit tests for pure functions (planner, timing, agent file)
+  qe/                 QE scenario tests (limitation guards, equipment, timing, app UI, live)
+  helpers.py          Shared fixtures and fakes (mock_client, fake_response, status_error)
+  qe_plans.py         Plan builders and row constants for QE tests
+  conftest.py         Autouse fixture: fresh Groq client cache per test
 pyproject.toml        Dependencies (managed with uv); uv.lock pins exact versions
 ```
 
@@ -259,6 +265,17 @@ out at about 31 min). Limitations outside the guarded ones depend on the prompt 
   that exercise's table rows are replaced. The model sees your goal, level, equipment and
   limitations, the row being replaced, and the names already in the plan (so it can't suggest
   a duplicate).
+
+## Design document
+
+The [HLD & LLD design document](https://claude.ai/artifact/5WDpFsqSQ3o123LZ5f4sUT) covers:
+
+- **High-Level Design:** system context, three-layer architecture, data flow, safety and trust
+  model, rate limits and token budget.
+- **Low-Level Design:** module breakdown with line counts, data models, plan generation and swap
+  sequences, post-generation check matrix (11 checks with repair-or-retry actions), limitation
+  guards, session timing engine, prompt architecture (8 sections, all placeholders), the
+  learning loop, error handling strategy, and the testing breakdown (484 tests across 8 files).
 
 ## Configuration
 
