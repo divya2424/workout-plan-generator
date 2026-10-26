@@ -4,8 +4,6 @@ The file is split into sections by `<!-- prompt: NAME -->` markers. Templates ar
 str.format, so the values (the client's text, learned rules) are never parsed as templates.
 """
 
-from __future__ import annotations
-
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -25,10 +23,23 @@ def load_sections(path: Path = AGENT_FILE) -> dict[str, str]:
     if len(_MARKER_LIKE.findall(text)) != len(_MARKER.findall(text)):
         raise ValueError(f"{path} has a malformed <!-- prompt: name --> marker")
     parts = _MARKER.split(text)  # [preamble, name1, body1, name2, body2, ...]
-    sections = {name: body.strip() for name, body in zip(parts[1::2], parts[2::2], strict=True)}
+    names = parts[1::2]
+    bodies = parts[2::2]
+    # Reject duplicate markers: the later copy silently replaces the section.
+    if len(names) != len(set(names)):
+        dupes = [n for n in names if names.count(n) > 1]
+        raise ValueError(f"{path} has duplicate prompt marker(s): {', '.join(sorted(set(dupes)))}")
+    sections = {name: body.strip() for name, body in zip(names, bodies, strict=True)}
     # A marker misspelt beyond what _MARKER_LIKE sees ("<!--- prompt", "promt") loses its section.
     if missing := [name for name in PROMPT_SECTIONS if name not in sections]:
         raise ValueError(f"{path} is missing the prompt section(s) {', '.join(missing)}")
+    # Reject empty sections (learned-rules may be empty: no rules yet).
+    _ALLOWED_EMPTY = {"learned-rules"}
+    for name, body in sections.items():
+        if name in PROMPT_SECTIONS and name not in _ALLOWED_EMPTY and not body:
+            raise ValueError(f"{path} has an empty prompt section: {name}")
+    if "{limitations}" not in sections.get("plan-request", ""):
+        raise ValueError(f"{path} plan-request section is missing the {{limitations}} placeholder")
     return sections
 
 

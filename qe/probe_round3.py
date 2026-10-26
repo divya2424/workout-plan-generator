@@ -1,7 +1,5 @@
 """Exploration probes for round 3 of qe-bug-fixes (no network). Run: uv run python -m qe.probe_round3"""
 
-from __future__ import annotations
-
 from backend.core.utils import (
     find_equipment_conflicts,
     find_limitation_conflicts,

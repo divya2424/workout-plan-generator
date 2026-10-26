@@ -1,7 +1,5 @@
 """Translate Groq SDK exceptions into friendly errors the UI can show as-is."""
 
-from __future__ import annotations
-
 import re
 
 import groq

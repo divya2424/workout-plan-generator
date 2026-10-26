@@ -1,7 +1,5 @@
 """Exception types shared by the backend. Every message is safe to show to the user."""
 
-from __future__ import annotations
-
 
 class PlanGenerationError(Exception):
     """Raised for any failure; `str(error)` is a user-friendly message."""

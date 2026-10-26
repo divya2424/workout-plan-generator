@@ -1,7 +1,5 @@
 """Shared fixtures and fakes for the backend tests."""
 
-from __future__ import annotations
-
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -9,6 +7,10 @@ import groq
 import httpx
 
 from backend.core.models import PlanRequest
+
+NONE = ["No equipment"]
+DUMBBELLS = ["Home dumbbells"]
+GYM = ["Full gym"]
 
 VALID = {
     "goal": "Build muscle",

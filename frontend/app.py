@@ -1,7 +1,5 @@
 """Streamlit UI for the workout plan generator. Run with: streamlit run frontend/app.py"""
 
-from __future__ import annotations
-
 import logging
 import os
 import sys

@@ -11,8 +11,6 @@ It runs offline, not inside the app: the hosted app's disk is reset on every dep
 learning from users' free text would let anyone write rules into the prompt.
 """
 
-from __future__ import annotations
-
 import argparse
 import re
 import time

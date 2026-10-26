@@ -6,8 +6,6 @@ Every failure is raised as a `PlanGenerationError` carrying a message that is sa
 show directly to the user.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Sequence
 

@@ -5,8 +5,6 @@ the plan added up to (one "45 min" day was really about 80). So the code estimat
 itself, trims days that run over, and writes the real figure.
 """
 
-from __future__ import annotations
-
 import re
 
 from backend.core.constants import (
@@ -16,6 +14,7 @@ from backend.core.constants import (
     PARENTHETICAL_NOTE_PATTERN,
     RUN_SECONDS_PER_METRE,
     SECONDS_PER_REP,
+    SHORTENED_NOTE,
     STILL_OVER_NOTE,
     WALK_SECONDS_PER_METRE,
     WARM_COOL_LINE,
@@ -252,7 +251,9 @@ def fit_to_session(plan: str, session_minutes: int) -> str:
     A "shortened" note already in the plan (e.g. from an earlier run, before a swap) is not added
     again; an old "still longer" note is replaced, because the day's length may have changed.
     """
-    plan, notes = _fit_sessions(STILL_OVER_NOTE.sub("", plan), session_minutes)
+    plan = STILL_OVER_NOTE.sub("", plan)
+    plan = SHORTENED_NOTE.sub("", plan)
+    plan, notes = _fit_sessions(plan, session_minutes)
     for note in notes:
         if note not in plan:
             plan = f"{plan}\n\n{note}"

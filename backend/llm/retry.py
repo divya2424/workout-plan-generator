@@ -1,7 +1,5 @@
 """Retry policy: re-ask the model once on transient or malformed results."""
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Callable
 

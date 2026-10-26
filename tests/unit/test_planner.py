@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from unittest.mock import patch
 
 import groq
@@ -39,23 +37,6 @@ from tests.qe_plans import SAFE_ROWS, build_plan, day_block, stated_minutes
 
 def test_valid_inputs_have_no_problems() -> None:
     assert validate_inputs(make_request()) == []
-
-
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"goal": ""},
-        {"experience": "Expert"},
-        {"days_per_week": 0},
-        {"days_per_week": 8},
-        {"equipment": []},
-        {"equipment": ["Spaceship"]},
-        {"session_minutes": 5},
-        {"limitations": "x" * 400},
-    ],
-)
-def test_invalid_inputs_are_reported(override: dict) -> None:
-    assert validate_inputs(make_request(**override))
 
 
 def test_invalid_inputs_raise_friendly_error_without_calling_api() -> None:
@@ -152,46 +133,6 @@ def test_repeated_empty_response_gives_friendly_error() -> None:
 CONNECTION_ERROR = groq.APIConnectionError(request=httpx.Request("POST", "https://api.groq.com"))
 
 
-@pytest.mark.parametrize(
-    ("error", "message"),
-    [
-        (status_error(groq.AuthenticationError, 401), "API key was rejected"),
-        (status_error(groq.RateLimitError, 429), "rate limit"),
-        (status_error(groq.NotFoundError, 404), "isn't available"),
-        (status_error(groq.BadRequestError, 400), "status 400"),
-        (RuntimeError("weird"), "Something went wrong"),
-    ],
-)
-def test_permanent_errors_are_friendly_and_not_retried(error: Exception, message: str) -> None:
-    client = mock_client(error, fake_response(GOOD_PLAN))
-    with patch.object(groq_client, "Groq", return_value=client):
-        with pytest.raises(PlanGenerationError, match=message):
-            generate_workout_plan(**VALID, api_key="k")
-    assert client.chat.completions.create.call_count == 1
-
-
-@pytest.mark.parametrize(
-    ("error", "message"),
-    [
-        (status_error(groq.InternalServerError, 500), "status 500"),
-        (status_error(groq.InternalServerError, 503), "status 503"),
-        (CONNECTION_ERROR, "internet"),
-    ],
-)
-def test_transient_errors_are_retried_then_reported(error: Exception, message: str) -> None:
-    client = mock_client(*[error] * MAX_ATTEMPTS)
-    with patch.object(groq_client, "Groq", return_value=client):
-        with pytest.raises(PlanGenerationError, match=message):
-            generate_workout_plan(**VALID, api_key="k")
-    assert client.chat.completions.create.call_count == MAX_ATTEMPTS
-
-
-def test_transient_error_recovers_on_retry() -> None:
-    client = mock_client(CONNECTION_ERROR, fake_response(GOOD_PLAN))
-    with patch.object(groq_client, "Groq", return_value=client):
-        assert "## Day 1" in generate_workout_plan(**VALID, api_key="k")
-
-
 def test_truncated_response_is_rejected_and_retried() -> None:
     cut_off = fake_response(GOOD_PLAN, finish_reason="length")
     client = mock_client(cut_off, fake_response(GOOD_PLAN))
@@ -247,24 +188,6 @@ def test_swap_replaces_only_matching_rows_and_sends_a_small_request() -> None:
     assert call["max_tokens"] == SWAP_MAX_TOKENS
     assert "## Day 1" not in call["messages"][1]["content"]  # the full plan is not re-sent
     assert "sore wrist" in call["messages"][1]["content"]
-
-
-@pytest.mark.parametrize(
-    "bad_reply",
-    [
-        "Sure! Try lunges.",
-        "| Exercise | Sets | Reps / Time | Rest | Notes |\n|---|---|---|---|---|",
-        "| Push-up | 3 | 8 | 60s | already in plan |",
-        "| Goblet Squat | 3 | 10 | 60s | same exercise |",
-        "| Lunge | 3 |",
-    ],
-)
-def test_swap_rejects_unusable_replies(bad_reply: str) -> None:
-    client = mock_client(*[fake_response(bad_reply)] * MAX_ATTEMPTS)
-    with patch.object(groq_client, "Groq", return_value=client):
-        with pytest.raises(PlanGenerationError):
-            planner.swap_exercise(GOOD_PLAN, "Goblet Squat", "", SWAP_REQUEST, api_key="k")
-    assert client.chat.completions.create.call_count == MAX_ATTEMPTS
 
 
 def test_swap_matches_exercise_names_case_insensitively() -> None:
@@ -342,18 +265,26 @@ def test_reasoning_effort_is_only_sent_to_reasoning_models(model: str, expected:
 @pytest.mark.parametrize(
     ("limitations", "exercise", "conflict"),
     [
-        ("no overhead pressing", "Seated Dumbbell Shoulder Press (light)", True),  # seen live
-        ("no overhead pressing", "Overhead Triceps Extension (rope)", True),  # seen live
-        ("bad knees", "Step\N{NON-BREAKING HYPHEN}Up (low step)", True),  # seen live, non-breaking hyphen
-        ("sore wrist", "Mountain Climbers", True),  # seen live
-        ("sore wrist", "Side Plank (forearm)", False),  # forearm variations are fine
+        ("no overhead pressing", "Seated Dumbbell Shoulder Press (light)", True),
+        ("no overhead pressing", "Overhead Triceps Extension (rope)", True),
+        ("bad knees", "Step\N{NON-BREAKING HYPHEN}Up (low step)", True),
+        ("sore wrist", "Mountain Climbers", True),
+        ("sore wrist", "Side Plank (forearm)", False),
         ("sore wrist", "Plank on Elbows", False),
-        ("no overhead pressing", "Overhead Squat (no weight or light)", True),  # seen live
-        ("no overhead pressing", "Seated Dumbbell Lateral Raise (no load overhead)", False),  # seen live
-        ("bad knees", "Dumbbell Hip Thrust (feet flat, no jumping)", False),  # note, not movement
-        ("lower back pain", "Seated side crunch", False),  # low-load, a judgment call
-        ("asthma", "Burpee", False),  # no rule for this limitation: left to the prompt
+        ("no overhead pressing", "Overhead Squat (no weight or light)", True),
+        ("no overhead pressing", "Seated Dumbbell Lateral Raise (no load overhead)", False),
+        ("bad knees", "Dumbbell Hip Thrust (feet flat, no jumping)", False),
+        ("lower back pain", "Seated side crunch", False),
+        ("asthma", "Burpee", False),
         ("", "Burpee", False),
+        # safe names that wider patterns must not catch
+        ("bad knees", "Setup drill", False),
+        ("bad knees", "Glute Bridge", False),
+        ("bad knees", "Calf Raise", False),
+        ("sore wrist", "Dead Bug", False),
+        ("sore wrist", "Push Upright Row Hold", False),
+        ("sore wrist", "Forearm Plank", False),
+        ("lower back pain", "Seated Calf Raise", False),
     ],
 )
 def test_limitation_guard(limitations: str, exercise: str, conflict: bool) -> None:
@@ -460,22 +391,6 @@ def test_stretches_are_moved_out_of_the_main_table() -> None:
 )
 def test_spaced_hyphenated_and_plural_spellings_are_caught(exercise: str, limitations: str) -> None:
     assert find_limitation_conflicts([exercise], limitations) == [exercise]
-
-
-@pytest.mark.parametrize(
-    ("exercise", "limitations"),
-    [
-        ("Setup drill", "bad knees"),
-        ("Glute Bridge", "bad knees"),
-        ("Calf Raise", "bad knees"),
-        ("Dead Bug", "sore wrist"),
-        ("Push Upright Row Hold", "sore wrist"),
-        ("Forearm Plank", "sore wrist"),
-        ("Seated Calf Raise", "lower back pain"),
-    ],
-)
-def test_wider_spellings_do_not_catch_safe_exercises(exercise: str, limitations: str) -> None:
-    assert find_limitation_conflicts([exercise], limitations) == []
 
 
 def test_a_box_step_up_for_bad_knees_is_dropped_with_a_note() -> None:

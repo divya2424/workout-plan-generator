@@ -1,7 +1,5 @@
 """QE pass on the agent file and the learning loop: broken files and odd learned rules."""
 
-from __future__ import annotations
-
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -205,3 +203,27 @@ def test_learning_stops_when_the_rule_list_is_full(agent: Path, capsys: pytest.C
             assert learn(dry_run=True) == []
         suite.assert_not_called()
     assert "merge or delete" in capsys.readouterr().out
+
+
+# --- agent-file corruption (regression) ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (
+            "<!-- prompt: learned-rules -->",
+            "<!-- prompt: system -->\nHello\n\n<!-- prompt: learned-rules -->",
+        ),
+        ("<!-- prompt: swap-system -->", "<!-- prompt: swap-system -->\n<!-- prompt: swap-system-old -->"),
+        ("<client_notes>\n{limitations}\n</client_notes>", "<client_notes>\n</client_notes>"),
+    ],
+)
+def test_a_corrupted_agent_file_is_rejected(tmp_path: Path, old: str, new: str) -> None:
+    copy = tmp_path / "agent.md"
+    shutil.copy(AGENT_FILE, copy)
+    text = copy.read_text(encoding="utf-8")
+    assert old in text
+    copy.write_text(text.replace(old, new, 1), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_sections(copy)

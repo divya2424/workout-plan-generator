@@ -1,7 +1,5 @@
 """QE pass on the Streamlit UI through streamlit.testing.v1.AppTest, Groq mocked."""
 
-from __future__ import annotations
-
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -10,11 +8,12 @@ import groq
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from backend.core.constants import MAX_ATTEMPTS
 from backend.llm import client as groq_client
 from tests.helpers import GOOD_PLAN, fake_response, mock_client, status_error
-from tests.qe_plans import build_plan
+from tests.qe_plans import SAFE_ROWS, build_plan
 
-APP = str(Path(__file__).resolve().parents[1] / "frontend" / "app.py")
+APP = str(Path(__file__).resolve().parents[2] / "frontend" / "app.py")
 
 
 @pytest.fixture
@@ -168,3 +167,30 @@ def test_a_swap_uses_the_inputs_that_made_the_plan_not_the_edited_sidebar(env: N
     plan = plan_markdown(at)
     assert not at.exception and not at.error
     assert plan.count("| Floor Press | 8 |") == 2 and "15-minute" not in plan
+
+
+# --- rejection UX (regression) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        ["| Barbell Squat | 3 | 8 | 90 s | |", "| Barbell Row | 3 | 8 | 90 s | |", *SAFE_ROWS[:2]],
+        ["| Hamstring Stretch | 2 | 30 s | 0 s | |", "| Child's Pose | 2 | 30 s | 0 s | |"],
+    ],
+)
+def test_the_app_shows_a_friendly_error_when_every_draft_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, rows: list[str]
+) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    with patch("dotenv.load_dotenv"):
+        at = AppTest.from_file(APP, default_timeout=30)
+        at.run()
+        fill(at, days=1, equipment="No equipment")
+        client = mock_client(*[fake_response(build_plan(1, rows))] * MAX_ATTEMPTS)
+        groq_client.get_client.cache_clear()
+        with patch.object(groq_client, "Groq", return_value=client):
+            next(b for b in at.button if b.label.startswith("Generate")).click().run()
+    assert not at.exception
+    assert at.error and "try again" in at.error[0].value.lower()
+    assert not any("## Day" in m.value for m in at.markdown)

@@ -4,8 +4,6 @@ The user prompt carries the client's profile as clearly labelled fields so the m
 cannot "miss" a constraint buried in a sentence.
 """
 
-from __future__ import annotations
-
 from backend.core.constants import CLIENT_NOTES_TAG, DISCLAIMER_MARKER
 from backend.core.models import PlanRequest
 from backend.core.utils import describe_equipment

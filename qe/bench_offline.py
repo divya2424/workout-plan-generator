@@ -7,8 +7,6 @@ the full generate_workout_plan path (happy path and the retry path), measured wi
 time.perf_counter. The mock answers instantly, so these numbers are the app's overhead only.
 """
 
-from __future__ import annotations
-
 import argparse
 import logging
 import statistics

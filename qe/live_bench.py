@@ -8,8 +8,6 @@ retry path shows up), keeps rate-limited calls out of the latency figures, and s
 on any 429, saying whether it was the tokens-per-day (TPD) cap. Never prints the API key.
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import logging

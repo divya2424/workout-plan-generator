@@ -5,8 +5,6 @@ checks only count them, so the learning loop can tell whether a prompt change ma
 itself better.
 """
 
-from __future__ import annotations
-
 from backend.core.constants import (
     DAY_HEADING_PATTERN,
     DISCLAIMER_MARKER,

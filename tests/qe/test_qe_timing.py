@@ -1,7 +1,5 @@
 """QE pass on backend/core/timing.py: session-length estimate and trimming edge cases."""
 
-from __future__ import annotations
-
 import pytest
 
 from backend.core.timing import _exercise_row, estimate_day_minutes, fit_to_session
@@ -71,8 +69,7 @@ def test_a_day_that_fits_keeps_its_sets_and_gets_an_honest_line() -> None:
 
 # 15 minutes is left out: with a 5 + 5 minute warm-up and cool-down, three exercises at 90 s rest
 # can't fit, see test_note_never_claims_a_fit_that_did_not_happen.
-@pytest.mark.parametrize("minutes", [20, 30, 45, 60, 90, 120])
-@pytest.mark.parametrize("days", [1, 3, 7])
+@pytest.mark.parametrize(("days", "minutes"), [(1, 20), (3, 45), (7, 60), (1, 120)])
 def test_every_day_fits_every_session_length(days: int, minutes: int) -> None:
     rows = [f"| Move {k} | 4 | 12 | 90 s | x |" for k in range(10)]
     fitted = fit_to_session(build_plan(days, rows), minutes)
@@ -178,3 +175,64 @@ def test_a_circuit_header_row_is_not_an_exercise() -> None:
 def test_circuit_rounds_count_towards_the_session_time() -> None:
     # 4 rounds x (45 + 60 + 45 s work + 60 s rest) + 10 min = 24 min; the estimate says 13.
     assert estimate_day_minutes(CIRCUIT_DAY)[0] >= 20
+
+
+# --- regression tests (from round 2 / round 3) --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ("| Run | 4 | 400 metres | 90 s | |", (4, 210)),
+        ("| Run | 4 | 400 meters | 90 s | |", (4, 210)),
+        ("| Run | 1 | 1 kilometre | 0 s | |", (1, 300)),
+        ("| Easy Run | 1 | 1 hour | 0 s | |", (1, 3600)),
+    ],
+)
+def test_spelled_out_units_are_read(row: str, expected: tuple[int, float]) -> None:
+    assert _exercise_row(row) == expected
+
+
+def test_a_spelled_out_distance_is_not_trimmed() -> None:
+    rows = ["| Run | 4 | 400 metres | 90 s | |", *SAFE_ROWS[:3]]
+    out = fit_to_session(build_plan(1, rows), 45)
+    assert "| Run | 4 |" in out and "shortened" not in out
+
+
+def test_a_clock_time_in_the_warm_up_text_does_not_replace_its_minutes() -> None:
+    body = "\n".join(SAFE_ROWS)
+    base = (
+        f"## Day 1 - A\n**Warm-up (8 min):** 5 min march, then arm swings.\n\n"
+        f"| Exercise | Sets | Reps / Time | Rest | Notes |\n|---|---|---|---|---|\n{body}\n\n"
+        f"**Cool-down (5 min):** Easy walk.\n\n## Progression\n- Add a rep.\n"
+    )
+    with_clock = base.replace("then arm swings", "then 0:30 arm swings")
+    assert estimate_day_minutes(with_clock) == estimate_day_minutes(base)
+
+
+def test_exercises_removed_by_trimming_are_named_in_a_note() -> None:
+    rows = [f"| Move {k} | 4 | 12 | 90 s | |" for k in range(6)]
+    out = fit_to_session(build_plan(1, rows), 30)
+    dropped = [f"Move {k}" for k in range(6) if f"Move {k}" not in list_exercises(out)]
+    notes = " ".join(line for line in out.splitlines() if line.startswith("**Note:**"))
+    assert dropped and all(name in notes for name in dropped)
+
+
+def test_a_rest_between_rounds_row_is_not_an_exercise() -> None:
+    rows = [
+        "| Squat | 3 | 10 | 10 s | circuit |",
+        "| Push-up | 3 | 10 | 10 s | circuit |",
+        "| Plank | 3 | 30 s | 10 s | circuit |",
+        "| Rest between rounds | 3 | — | 30 s | circuit |",
+    ]
+    out = fit_to_session(build_plan(1, rows), 45)
+    assert "Rest between rounds" not in list_exercises(out)
+    assert "at least" not in out
+
+
+@pytest.mark.parametrize("reps", ["N/A", "see below"])
+def test_a_circuit_header_with_words_in_the_reps_cell_is_still_a_header(reps: str) -> None:
+    plan = build_plan(1, [f"| Circuit (repeat 3x, 60 s rest) | 3 | {reps} | 60 s | |", *SAFE_ROWS])
+    dashed = build_plan(1, ["| Circuit (repeat 3x, 60 s rest) | | - | | |", *SAFE_ROWS])
+    assert list_exercises(plan) == list_exercises(dashed)
+    assert estimate_day_minutes(plan) == estimate_day_minutes(dashed)

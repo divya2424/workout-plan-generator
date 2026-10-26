@@ -3,8 +3,6 @@
 Retries live in retry.py; this module makes exactly one attempt per call.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from functools import lru_cache

@@ -3,8 +3,6 @@
 None of these call Groq or Streamlit, so they are cheap to test on their own.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import re
@@ -36,11 +34,14 @@ from backend.core.constants import (
     MIN_EXERCISES_PER_DAY_AFTER_REPAIR,
     MIN_SESSION_MINUTES,
     MINUTES_PATTERN,
+    NEGATED_ITEM_MAX_WORDS,
     NEGATED_ITEM_PATTERN,
     NOTES_CELL,
     PARENTHETICAL_NOTE_PATTERN,
     REST_ROW_PATTERN,
     SECTION_HEADING_PATTERN,
+    STRETCH_EXERCISE_OVERRIDE,
+    STRETCH_FALSE_POSITIVE,
     STRETCH_PATTERN,
     SWAP_ROW_CELLS,
     TABLE_SEPARATOR_PATTERN,
@@ -108,6 +109,18 @@ def describe_equipment(equipment: Collection[str]) -> str:
     return "Bodyweight only (no weights, no bench, no pull-up bar, no machines)"
 
 
+def _check_circuit_headers_equipment(plan: str, equipment: Collection[str]) -> None:
+    """Raise RetryableError if a circuit header names an exercise that needs missing equipment."""
+    if not equipment:
+        return
+    for line in plan.splitlines():
+        if (header := circuit_header(line)) and find_equipment_conflicts([header], equipment):
+            raise RetryableError(
+                "The AI wrote a circuit that needs equipment you didn't select. Please try again.",
+                model_hint=_equipment_hint([header], equipment),
+            )
+
+
 def check_plan(
     plan: str, days_per_week: int, limitations: str = "", *, equipment: Collection[str] = ()
 ) -> str:
@@ -136,6 +149,7 @@ def check_plan(
     # check runs after the drops, so a drop can't leave a stretch-only day behind.
     plan, dropped_hint = _drop_conflicts(plan, limitations, equipment)
     plan = _repair_session_text(plan, limitations)
+    _check_circuit_headers_equipment(plan, equipment)
     if empty := non_training_days(plan):
         days = join_and([f"Day {n}" for n in empty])
         verb = "has" if len(empty) == 1 else "have"
@@ -269,13 +283,27 @@ def without_banned_notes(cells: list[str], limitations: str) -> list[str]:
     return cells
 
 
+def _is_negated_short(item: str) -> bool:
+    """True for a short negation like "No jump" (up to 2 words after the negation word)."""
+    m = NEGATED_ITEM_PATTERN.match(item)
+    if not m:
+        return False
+    rest = item[m.end() :].split()
+    return len(rest) <= NEGATED_ITEM_MAX_WORDS
+
+
 def _text_conflicts(text: str, limitations: str) -> list[tuple[LimitationGuard, list[str]]]:
     """The guards that free text breaks, checked item by item (see TEXT_ITEM_SPLIT).
 
-    An item that rules a movement out ("No jump, touch opposite toe") is skipped.
+    A short negation ("No jump", "avoid lunges") is excused. A longer item that starts with
+    a negation word but names a banned movement further along ("don't rush the jump squats")
+    is still checked. Label artifacts like "(5 min):" from warm_cool_text are stripped so the
+    first real item can be matched by NEGATED_ITEM_PATTERN.
     """
-    items = TEXT_ITEM_SPLIT.split(plain_text(text))
-    return _broken_guards([item for item in items if not NEGATED_ITEM_PATTERN.match(item)], limitations)
+    cleaned = PARENTHETICAL_NOTE_PATTERN.sub("", plain_text(text))
+    cleaned = re.sub(r"^\s*:\s*", "", cleaned)  # strip leading colon from label
+    items = TEXT_ITEM_SPLIT.split(cleaned)
+    return _broken_guards([item for item in items if not _is_negated_short(item)], limitations)
 
 
 def find_session_text_conflicts(plan: str, limitations: str) -> list[str]:
@@ -319,8 +347,18 @@ def non_training_days(plan: str) -> list[int]:
 
 
 def is_stretch(name: str) -> bool:
-    """True for stretches and mobility drills, which belong in the warm-up or cool-down."""
-    return bool(STRETCH_PATTERN.search(plain_text(name)))
+    """True for stretches and mobility drills, which belong in the warm-up or cool-down.
+
+    A push-up hybrid ("Inchworm to Push-up", "Downward Dog Push-up") is a real exercise,
+    not a stretch, even though the base move is a mobility drill. Likewise "One-Arm Swing"
+    and "Hip Circle Band Walk" are strength moves.
+    """
+    text = plain_text(name)
+    if not STRETCH_PATTERN.search(text):
+        return False
+    if STRETCH_EXERCISE_OVERRIDE.search(text):
+        return False
+    return not STRETCH_FALSE_POSITIVE.search(text)
 
 
 def find_equipment_conflicts(exercise_names: list[str], equipment: Collection[str]) -> list[str]:
@@ -380,7 +418,9 @@ def _fix_table_separators(plan: str) -> str:
         if TABLE_SEPARATOR_PATTERN.match(line):
             # As many cells as the header above, which a garbled `|---+---+---|` doesn't show.
             above = lines[i - 1] if i else ""
-            lines[i] = "|" + "---|" * len(split_row(above if above.lstrip().startswith("|") else line))
+            # A header line may or may not start with "|"; split_row handles both.
+            ref = above if above.strip() and "|" in above else line
+            lines[i] = "|" + "---|" * len(split_row(ref))
     return "\n".join(lines)
 
 
@@ -458,9 +498,12 @@ def rest_row(line: str) -> bool:
     return bool(name and REST_ROW_PATTERN.match(name))
 
 
+_NON_REPS = re.compile(r"^[\s\-\N{EN DASH}\N{EM DASH}]*$|^n/?a$|^see\b", re.IGNORECASE)
+
+
 def _has_reps(line: str) -> bool:
     cells = split_row(line)
-    return len(cells) > 2 and bool(cells[2].strip("-\N{EN DASH}\N{EM DASH} "))
+    return len(cells) > 2 and not _NON_REPS.match(cells[2])
 
 
 def table_name(line: str) -> str | None:

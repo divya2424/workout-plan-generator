@@ -1,7 +1,5 @@
 """All constants for the workout plan generator: input options, limits and model settings."""
 
-from __future__ import annotations
-
 import re
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -144,6 +142,12 @@ LIMITATION_GUARDS: tuple[LimitationGuard, ...] = (
             "plank",
             "bear crawl",
             r"\bdips?\b",
+            "downward dog",
+            "upward dog",
+            "cobra pose",
+            "inch worm",
+            "sun salutation",
+            "crab walk",
         ),
         re.compile(r"forearm|elbow", re.IGNORECASE),
         "anything with body weight on the hands (push-ups, hand planks, mountain climbers, dips, "
@@ -190,6 +194,13 @@ STRETCH_PATTERN = terms(
     "thoracic",
     "inch worm",
 )
+# Exercises that contain a stretch term but are not stretches: a push-up hybrid ("Inchworm to
+# Push-up", "Downward Dog Push-up") is a real exercise, and "One-Arm Swing" / "Hip Circle Band
+# Walk" are strength moves, not mobility drills.
+STRETCH_EXERCISE_OVERRIDE = terms(r"push ups?\b", r"press ups?\b")
+STRETCH_FALSE_POSITIVE = re.compile(
+    r"one[- ]arm\s+swing|single\s+arm\s+swing|hip\s+circle\s+band", re.IGNORECASE
+)
 # A note in parentheses inside an exercise name, e.g. "(no load overhead)".
 PARENTHETICAL_NOTE_PATTERN = re.compile(r"\([^)]*\)")
 # A separator row: every cell starts with at least three dashes, possibly followed by junk.
@@ -233,7 +244,7 @@ _NOT_AT_HOME = (
     "leg extension",
     "hack squat",
     "preacher curl",
-    "hip (ab|ad)ductor",
+    "hip (ab|ad)ductor machine",
     "battle rope",
     "sand bag",
     "land mine",
@@ -264,7 +275,11 @@ WARM_COOL_LINE = re.compile(
 # wrist guard's "forearm" would otherwise excuse the whole line). Not inside parentheses.
 TEXT_ITEM_SPLIT = re.compile(r"(?:[,;+/&]|\.\s|\s(?:then|and|or|with)\s)(?![^(]*\))", re.IGNORECASE)
 # An item that rules a movement out ("No jump, touch opposite toe") doesn't instruct it.
+# Only excuses the item when the negation word directly governs the banned term (within ~2 words).
+# "don't rush the jump squats" is NOT excused because the banned term is far from the negation.
 NEGATED_ITEM_PATTERN = re.compile(r"^\s*(?:no|avoid|without|don'?t|do not|never)\b", re.IGNORECASE)
+# Maximum word count (after the negation word) for the item to be fully excused.
+NEGATED_ITEM_MAX_WORDS = 2
 # Minutes as written, e.g. "5" or "5-10" in "(5-10 min)".
 MINUTES_PATTERN = re.compile(r"(\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?)\s*(?:min|mins|minutes?)\b", re.I)
 # Fixed lines that replace a warm-up or cool-down that breaks a limitation. Ramp-up sets of the
@@ -282,10 +297,17 @@ COOL_DOWN_SAFE_LINE = (
 # 10" are exercises.
 CIRCUIT_HEADER_PATTERN = re.compile(r"^(?:circuit|superset|rounds?)\b|repeat\s*\d", re.IGNORECASE)
 # A row that is only rest, e.g. "Rest between rounds | 3 | - | 30 s" ("Rest-Pause Curl" is an exercise).
-REST_ROW_PATTERN = re.compile(r"^rest(?:\s|$)", re.IGNORECASE)
+# "Rest Pause Push-ups" and "Rest 30 s, then X" are NOT rest rows; they contain real exercises.
+# "Rest" alone (no more words) is a rest row too.
+REST_ROW_PATTERN = re.compile(
+    r"^rest(?:\s+(?!pause\b)(?!.*\bthen\b)(?:between|after|period)\b.*|:?\s*)$", re.IGNORECASE
+)
 # A note fit_to_session writes about the current length; replaced, not kept, when it runs again.
 STILL_OVER_NOTE = re.compile(
     r"\n*^\*\*Note:\*\* [^\n]* still longer than your \d+-minute session[^\n]*$", re.M
+)
+SHORTENED_NOTE = re.compile(
+    r"\n*^\*\*Note:\*\* [^\n]* shortened [^\n]* to fit your \d+-minute session[^\n]*$", re.M
 )
 CIRCUIT_ROUNDS_PATTERN = re.compile(r"repeat\s*(\d+)\s*x|(\d+)\s*rounds?", re.IGNORECASE)
 # Distances in the Reps cell: 0.3 s per metre is a 5 min/km run, 0.6 s a 10 min/km walk.

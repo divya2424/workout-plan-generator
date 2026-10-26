@@ -1,7 +1,5 @@
 """Plan builders for the QE tests: well-formed model answers with any number of days."""
 
-from __future__ import annotations
-
 import re
 
 # Neutral exercises: none trips a limitation guard or the stretch pattern.

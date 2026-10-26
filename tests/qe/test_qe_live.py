@@ -1,7 +1,5 @@
 """Live QE checks against real Groq (`uv run pytest -m live tests/test_qe_live.py`, 2 calls)."""
 
-from __future__ import annotations
-
 import os
 
 import pytest

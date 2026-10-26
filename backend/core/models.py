@@ -1,7 +1,5 @@
 """Data types shared across the backend."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from backend.core.constants import DEFAULT_SESSION_MINUTES
