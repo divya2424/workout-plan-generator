@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Literal, NamedTuple
 
 # --- Prompts ---------------------------------------------------------------------------
 
@@ -152,35 +152,52 @@ FALLBACK_DISCLAIMER = (
 )
 
 DAY_HEADING_PATTERN = re.compile(r"^##\s*Day\s+(\d+)\b", re.IGNORECASE | re.MULTILINE)
+
+
 # Code-level backstop for the most common limitations. The prompt already forbids these, but
 # live tests showed the model slipping about 1 time in 4 (e.g. a shoulder press for "no overhead
 # pressing"), so a plan naming one of these exercises is rejected and retried.
 # Each rule: (pattern on the user's limitation text, banned exercise names, names still allowed).
-LIMITATION_GUARDS: tuple[tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str] | None], ...] = (
-    (
+class LimitationGuard(NamedTuple):
+    trigger: re.Pattern[str]  # matched against the user's limitation text
+    banned: re.Pattern[str]  # exercise names that clash with it
+    allowed: re.Pattern[str] | None  # variations that are fine anyway, e.g. "forearm"
+    description: str  # the whole category, told to the model when it slips
+
+
+LIMITATION_GUARDS: tuple[LimitationGuard, ...] = (
+    LimitationGuard(
         re.compile(r"\bknee", re.IGNORECASE),
         re.compile(r"jump|lunge|step-?up|pistol|plyo|burpee|skater|split squat", re.IGNORECASE),
         None,
+        "anything that jumps or loads one bent knee (jumps, lunges, step-ups, split or pistol squats)",
     ),
-    (
+    LimitationGuard(
         re.compile(r"overhead|shoulder", re.IGNORECASE),
         re.compile(
             r"overhead|shoulder press|military press|push press|arnold|handstand|snatch|jerk|pike",
             re.IGNORECASE,
         ),
         None,
+        "ANY movement with the arms raised overhead (shoulder, Arnold, military or push presses, "
+        "overhead triceps extensions, overhead squats, handstands, snatches)",
     ),
-    (
+    LimitationGuard(
         re.compile(r"wrist", re.IGNORECASE),
         re.compile(r"push-?up|mountain climber|burpee|handstand|plank|bear crawl|\bdips?\b", re.IGNORECASE),
         re.compile(r"forearm", re.IGNORECASE),
+        "anything with body weight on the hands (push-ups, hand planks, mountain climbers, dips, "
+        "burpees); forearm versions are fine",
     ),
-    (
+    LimitationGuard(
         re.compile(r"lower back|back pain", re.IGNORECASE),
         re.compile(r"deadlift|good ?morning|sit-?up|russian twist|superman|v-?up|jackknife", re.IGNORECASE),
         None,
+        "spinal loading or flexion under load (deadlifts, good mornings, sit-ups, Russian twists, supermans)",
     ),
 )
 
+# A note in parentheses inside an exercise name, e.g. "(no load overhead)".
+PARENTHETICAL_NOTE_PATTERN = re.compile(r"\([^)]*\)")
 # A separator row: every cell starts with at least three dashes, possibly followed by junk.
 TABLE_SEPARATOR_PATTERN = re.compile(r"^\s*\|(?:\s*:?-{3,}[^|]*\|)+\s*$")

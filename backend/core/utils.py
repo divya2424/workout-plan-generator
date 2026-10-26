@@ -25,8 +25,10 @@ from backend.core.constants import (
     MAX_SESSION_MINUTES,
     MIN_DAYS,
     MIN_SESSION_MINUTES,
+    PARENTHETICAL_NOTE_PATTERN,
     SWAP_ROW_CELLS,
     TABLE_SEPARATOR_PATTERN,
+    LimitationGuard,
 )
 from backend.core.errors import PlanGenerationError, RetryableError
 from backend.core.models import PlanRequest
@@ -86,14 +88,16 @@ def check_plan(plan: str, days_per_week: int, limitations: str = "") -> str:
     if day_numbers != list(range(1, days_per_week + 1)):
         raise RetryableError(
             f"The AI returned a plan with {len(day_numbers)} training day(s) instead of "
-            f"{days_per_week}. Please click Generate again."
+            f"{days_per_week}. Please click Generate again.",
+            model_hint=f'It had {len(day_numbers)} "## Day" sections; exactly {days_per_week} are required.',
         )
 
     conflicts = find_limitation_conflicts(list_exercises(plan), limitations)
     if conflicts:
         raise RetryableError(
             f"The AI included an exercise that conflicts with your limitations ({conflicts[0]}). "
-            "Please try again."
+            "Please try again.",
+            model_hint=_limitation_hint(list_exercises(plan), limitations),
         )
 
     plan = _fix_table_separators(plan)
@@ -147,19 +151,43 @@ def list_exercises(plan: str) -> list[str]:
     return list(dict.fromkeys(name for name in names if name))
 
 
+def _broken_guards(exercise_names: list[str], limitations: str) -> list[tuple[LimitationGuard, list[str]]]:
+    """Each guard the plan breaks, with the offending exercise names.
+
+    Notes in parentheses are ignored when looking for banned movements, because the model
+    writes things like "Lateral Raise (no load overhead)", but they are still read for allowed
+    variations such as "Side Plank (forearm)".
+    """
+    broken: list[tuple[LimitationGuard, list[str]]] = []
+    if not limitations:
+        return broken
+    for guard in LIMITATION_GUARDS:
+        if not guard.trigger.search(limitations):
+            continue
+        hits = []
+        for name in exercise_names:
+            full = name.replace("\u2011", "-").replace("\u2010", "-")
+            movement = PARENTHETICAL_NOTE_PATTERN.sub("", full)
+            if guard.banned.search(movement) and not (guard.allowed and guard.allowed.search(full)):
+                hits.append(name)
+        if hits:
+            broken.append((guard, hits))
+    return broken
+
+
 def find_limitation_conflicts(exercise_names: list[str], limitations: str) -> list[str]:
     """Exercise names that clearly clash with a common limitation (see LIMITATION_GUARDS)."""
-    if not limitations:
-        return []
-    conflicts: list[str] = []
-    for trigger, banned, allowed in LIMITATION_GUARDS:
-        if not trigger.search(limitations):
-            continue
-        for name in exercise_names:
-            plain = name.replace("\u2011", "-").replace("\u2010", "-")
-            if banned.search(plain) and not (allowed and allowed.search(plain)) and name not in conflicts:
-                conflicts.append(name)
-    return conflicts
+    return list(
+        dict.fromkeys(name for _, hits in _broken_guards(exercise_names, limitations) for name in hits)
+    )
+
+
+def _limitation_hint(exercise_names: list[str], limitations: str) -> str:
+    """Tell the model which movements broke the rules and the whole category to avoid."""
+    broken = _broken_guards(exercise_names, limitations)
+    names = ", ".join(repr(name) for _, hits in broken for name in hits)
+    categories = "; ".join(guard.description for guard, _ in broken)
+    return f"It included {names}, which conflicts with the client's limitations. Leave out {categories}."
 
 
 def parse_swap_row(raw: str, old_name: str, existing: list[str], limitations: str = "") -> str:
@@ -172,11 +200,13 @@ def parse_swap_row(raw: str, old_name: str, existing: list[str], limitations: st
             continue
         if name.lower() in taken:
             raise RetryableError(
-                "The AI suggested an exercise that is already in your plan. Please try again."
+                "The AI suggested an exercise that is already in your plan. Please try again.",
+                model_hint=f"'{name}' is already in the plan. Choose a different exercise.",
             )
         if find_limitation_conflicts([name], limitations):
             raise RetryableError(
-                f"The AI suggested '{name}', which conflicts with your limitations. Please try again."
+                f"The AI suggested '{name}', which conflicts with your limitations. Please try again.",
+                model_hint=_limitation_hint([name], limitations),
             )
         return "| " + " | ".join(cells) + " |"
     raise RetryableError("The AI didn't return a usable replacement exercise. Please try again.")

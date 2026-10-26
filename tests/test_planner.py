@@ -370,6 +370,9 @@ def test_reasoning_effort_is_only_sent_to_reasoning_models(model: str, expected:
         ("bad knees", "Step\N{NON-BREAKING HYPHEN}Up (low step)", True),  # seen live, non-breaking hyphen
         ("sore wrist", "Mountain Climbers", True),  # seen live
         ("sore wrist", "Side Plank (forearm)", False),  # forearm variations are fine
+        ("no overhead pressing", "Overhead Squat (no weight or light)", True),  # seen live
+        ("no overhead pressing", "Seated Dumbbell Lateral Raise (no load overhead)", False),  # seen live
+        ("bad knees", "Dumbbell Hip Thrust (feet flat, no jumping)", False),  # note, not movement
         ("lower back pain", "Seated side crunch", False),  # low-load, a judgment call
         ("asthma", "Burpee", False),  # no rule for this limitation: left to the prompt
         ("", "Burpee", False),
@@ -394,3 +397,21 @@ def test_swap_rejects_a_replacement_that_breaks_a_limitation() -> None:
     with patch.object(groq_client, "Groq", return_value=mock_client(*replies)):
         with pytest.raises(PlanGenerationError, match="conflicts with your limitations"):
             planner.swap_exercise(GOOD_PLAN, "Push-up", "", knee_request, api_key="k")
+
+
+def test_retry_tells_the_model_what_was_wrong() -> None:
+    bad = GOOD_PLAN.replace("Goblet Squat", "Jump Squat")
+    client = mock_client(fake_response(bad), fake_response(GOOD_PLAN))
+    with patch.object(groq_client, "Groq", return_value=client):
+        generate_workout_plan(**{**VALID, "limitations": "bad knees"}, api_key="k")
+    first, second = (c.kwargs["messages"] for c in client.chat.completions.create.call_args_list)
+    assert len(second) == len(first) + 1
+    assert "Jump Squat" in second[-1]["content"] and "rejected" in second[-1]["content"]
+
+
+def test_transport_retries_resend_the_original_request() -> None:
+    client = mock_client(CONNECTION_ERROR, fake_response(GOOD_PLAN))
+    with patch.object(groq_client, "Groq", return_value=client):
+        generate_workout_plan(**VALID, api_key="k")
+    first, second = (c.kwargs["messages"] for c in client.chat.completions.create.call_args_list)
+    assert first == second
